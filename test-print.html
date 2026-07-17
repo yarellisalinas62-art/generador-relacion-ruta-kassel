@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Generador de Relación de Ruta - Kassel Home and Living</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.12.1/html2pdf.bundle.min.js"></script>
+<style>
+  :root{
+    --green:#4CAF50; --green-light:#C6E0B4; --gray:#D9D9D9; --navy:#1F3864;
+    --red-fill:#FFC7CE; --red-text:#9C0006; --border:#c9ccd1; --bg:#f5f6f8;
+  }
+  *{box-sizing:border-box;}
+  body{font-family:Arial, Helvetica, sans-serif; background:var(--bg); margin:0; padding:0; color:#1a1a1a;}
+  header{background:var(--green); color:#fff; padding:22px 28px;}
+  header h1{margin:0; font-size:20px;}
+  header p{margin:6px 0 0; font-size:13px; opacity:.95;}
+  main{max-width:900px; margin:28px auto; padding:0 20px 60px;}
+  .card{background:#fff; border:1px solid var(--border); border-radius:10px; padding:24px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .card h2{margin-top:0; font-size:16px; color:var(--navy);}
+  .drop{border:2px dashed #9aa5b1; border-radius:10px; padding:36px 20px; text-align:center; cursor:pointer; transition:.15s; background:#fafbfc;}
+  .drop.drag{border-color:var(--green); background:#eef8ee;}
+  .drop input{display:none;}
+  .drop p{margin:8px 0 0; color:#555; font-size:14px;}
+  .drop .fname{font-weight:bold; color:var(--navy); margin-top:10px;}
+  button{background:var(--green); color:#fff; border:none; padding:11px 20px; border-radius:6px; font-size:14px; cursor:pointer; font-weight:bold;}
+  button:disabled{background:#a9c8ab; cursor:not-allowed;}
+  button.secondary{background:#fff; color:var(--navy); border:1px solid var(--navy);}
+  .actions{margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;}
+  .status{margin-top:14px; font-size:13px; white-space:pre-wrap; line-height:1.5;}
+  .status.err{color:#b00020;}
+  .status.ok{color:#1a7a1a;}
+  table.summary{border-collapse:collapse; width:100%; margin-top:14px; font-size:13px;}
+  table.summary th, table.summary td{border:1px solid var(--border); padding:8px 10px; text-align:left;}
+  table.summary th{background:var(--gray);}
+  .odv-row td{background:#fff4f4;}
+  ul.rules{font-size:13px; line-height:1.7; color:#333; padding-left:20px;}
+  .badge{display:inline-block; background:var(--green-light); color:var(--navy); font-size:11px; font-weight:bold; padding:2px 8px; border-radius:10px; margin-left:6px;}
+  footer{text-align:center; font-size:12px; color:#888; padding:20px;}
+
+  /* ---------- Vista de impresión (oculta en pantalla, visible solo al imprimir/exportar PDF) ---------- */
+  #printArea{ display:none; }
+  .print-page{ page-break-after:always; }
+  .print-page:last-child{ page-break-after:auto; }
+  .print-title{
+    font:bold 24pt Arial, sans-serif; text-align:center; background:#cccccc; color:#000;
+    border:1px solid #000; min-height:45pt; display:flex; align-items:center; justify-content:center;
+    margin-bottom:6pt;
+  }
+  table.reloc{ width:100%; border-collapse:collapse; table-layout:fixed; }
+  table.reloc th, table.reloc td{
+    border:1px solid #000; font:bold 16pt Arial, sans-serif; text-align:center; vertical-align:middle;
+    height:26.5pt; padding:0 4pt; overflow:hidden;
+  }
+  table.reloc th{ background:#cccccc; }
+  table.reloc td.num{ background:#cccccc; width:22%; }
+  table.reloc td.pedido{ width:56%; }
+  table.reloc td.area{ width:22%; }
+  table.reloc tr.odv-header td{ background:#cccccc; }
+
+  @media print{
+    body > *:not(#printArea){ display:none !important; }
+    #printArea{ display:block !important; }
+    @page{ size:A4 portrait; margin:10mm 8mm; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Generador de Relación de Ruta<span class="badge">Kassel Home and Living</span></h1>
+  <p>Sube el Excel de la ruta ya limpio ("Ruta_Final_Agrupada...") e imprime directo la Relación General + hojas de Almacén Q y A, o descárgalas en PDF.</p>
+</header>
+
+<main>
+  <div class="card">
+    <h2>1. Sube tu Excel del día</h2>
+    <div class="drop" id="drop">
+      <input type="file" id="fileInput" accept=".xlsx">
+      <p><strong>Arrastra el archivo aquí</strong> o haz clic para elegirlo</p>
+      <p>Formato esperado: columnas Número/Pedido/Fábrica/Estatus (tabla izquierda) y Número/Pedido/Fábrica/Estatus/Motivo (tabla derecha, F-J).</p>
+      <div class="fname" id="fname"></div>
+    </div>
+    <div class="actions">
+      <button id="genBtn" disabled>Generar relación</button>
+      <button class="secondary" id="resetBtn">Empezar de nuevo</button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none;">
+    <h2>2. Resultado</h2>
+    <table class="summary" id="summaryTable"></table>
+    <div class="actions">
+      <button id="printBtn">Imprimir relación</button>
+      <button class="secondary" id="pdfBtn">Descargar PDF</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Reglas que aplica esta herramienta</h2>
+    <ul class="rules">
+      <li>Toma solo la tabla izquierda (Número, Pedido, Fábrica, Estatus) como pedidos válidos para almacenes, respetando el orden exacto de las filas del Excel.</li>
+      <li>Genera 3 documentos: <strong>RELACION GENERAL</strong> (todos los pedidos válidos + apartado ODV), <strong>ALMACEN Q</strong> y <strong>ALMACEN A</strong>. Almacén K ya no recibe hoja propia.</li>
+      <li>El apartado <strong>ODV</strong> (solo en la relación general) incluye los pedidos de la tabla derecha cuyo motivo sea <strong>Pendiente, SM o SD</strong>. Cancelado y Stand By se descartan por completo.</li>
+      <li>En las hojas de Almacén Q/A, la columna AREA muestra solo la letra de ese almacén; en la relación general muestra el valor de Fábrica tal cual viene en el Excel.</li>
+      <li>Cada página impresa muestra un bloque de 52 pedidos numerados. "Imprimir relación" abre el diálogo de impresión del navegador (desde ahí también puedes elegir "Guardar como PDF"); "Descargar PDF" genera directamente el archivo.</li>
+      <li>Todo el procesamiento ocurre en tu propio navegador: el archivo no se sube a ningún servidor.</li>
+    </ul>
+  </div>
+</main>
+
+<footer>Herramienta interna — Kassel Home and Living</footer>
+
+<div id="printArea"></div>
+
+<script>
+/* ======================= Utilidades generales ======================= */
+
+const DIAS = ['DOMINGO','LUNES','MARTES','MIERCOLES','JUEVES','VIERNES','SABADO'];
+const MESES = ['','ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
+const REJECT_TO_ODV = new Set(['PENDIENTE','SM','SD']);
+
+function colLetterToIndex(letters){
+  let idx = 0;
+  for (let i = 0; i < letters.length; i++){
+    idx = idx * 26 + (letters.charCodeAt(i) - 64);
+  }
+  return idx; // 1-based
+}
+function indexToColLetter(idx){
+  let s = '';
+  while (idx > 0){
+    const rem = (idx - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    idx = Math.floor((idx - 1) / 26);
+  }
+  return s;
+}
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;'
+  }[ch]));
+}
+
+/* ======================= Lectura del XLSX subido (ZIP + XML, sin librerías externas) ======================= */
+
+async function readZipEntries(arrayBuffer){
+  const bytes = new Uint8Array(arrayBuffer);
+  const dv = new DataView(arrayBuffer);
+  // Buscar el End Of Central Directory (EOCD), firma 0x06054b50, desde el final
+  let eocdOffset = -1;
+  for (let i = bytes.length - 22; i >= 0 && i >= bytes.length - 22 - 65557; i--){
+    if (dv.getUint32(i, true) === 0x06054b50){ eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw new Error('No se pudo leer el archivo: no parece un .xlsx válido (ZIP).');
+  const cdEntries = dv.getUint16(eocdOffset + 10, true);
+  const cdOffset = dv.getUint32(eocdOffset + 16, true);
+
+  const entries = {};
+  let ptr = cdOffset;
+  for (let i = 0; i < cdEntries; i++){
+    const sig = dv.getUint32(ptr, true);
+    if (sig !== 0x02014b50) break;
+    const compMethod = dv.getUint16(ptr + 10, true);
+    const compSize = dv.getUint32(ptr + 20, true);
+    const uncompSize = dv.getUint32(ptr + 24, true);
+    const nameLen = dv.getUint16(ptr + 28, true);
+    const extraLen = dv.getUint16(ptr + 30, true);
+    const commentLen = dv.getUint16(ptr + 32, true);
+    const localHeaderOffset = dv.getUint32(ptr + 42, true);
+    const nameBytes = bytes.subarray(ptr + 46, ptr + 46 + nameLen);
+    const name = new TextDecoder('utf-8').decode(nameBytes);
+    entries[name] = { compMethod, compSize, uncompSize, localHeaderOffset };
+    ptr += 46 + nameLen + extraLen + commentLen;
+  }
+
+  async function extract(name){
+    const meta = entries[name];
+    if (!meta) return null;
+    const lh = meta.localHeaderOffset;
+    const lhNameLen = dv.getUint16(lh + 26, true);
+    const lhExtraLen = dv.getUint16(lh + 28, true);
+    const dataStart = lh + 30 + lhNameLen + lhExtraLen;
+    const raw = bytes.subarray(dataStart, dataStart + meta.compSize);
+    if (meta.compMethod === 0){
+      return raw;
+    } else if (meta.compMethod === 8){
+      const ds = new DecompressionStream('deflate-raw');
+      const stream = new Blob([raw]).stream().pipeThrough(ds);
+      const buf = await new Response(stream).arrayBuffer();
+      return new Uint8Array(buf);
+    } else {
+      throw new Error('Método de compresión no soportado en el Excel de origen (' + meta.compMethod + ').');
+    }
+  }
+
+  return { list: Object.keys(entries), extract };
+}
+
+function parseSharedStrings(xmlText){
+  if (!xmlText) return [];
+  const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+  const items = Array.from(doc.getElementsByTagName('si'));
+  return items.map(si => {
+    const parts = Array.from(si.getElementsByTagName('t')).map(t => t.textContent);
+    return parts.join('');
+  });
+}
+
+function parseSheetRows(xmlText, sharedStrings){
+  const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+  const rowEls = Array.from(doc.getElementsByTagName('row'));
+  const rows = {}; // rowNum -> { colIdx: value }
+  for (const rowEl of rowEls){
+    const rNum = parseInt(rowEl.getAttribute('r'), 10);
+    const rowData = {};
+    const cellEls = Array.from(rowEl.getElementsByTagName('c'));
+    for (const c of cellEls){
+      const ref = c.getAttribute('r'); // e.g. "A2"
+      const m = ref.match(/^([A-Z]+)(\d+)$/);
+      if (!m) continue;
+      const colIdx = colLetterToIndex(m[1]);
+      const type = c.getAttribute('t');
+      let value = null;
+      if (type === 'inlineStr'){
+        const isEl = c.getElementsByTagName('is')[0];
+        value = isEl ? Array.from(isEl.getElementsByTagName('t')).map(t => t.textContent).join('') : '';
+      } else {
+        const vEl = c.getElementsByTagName('v')[0];
+        const raw = vEl ? vEl.textContent : null;
+        if (raw === null){ value = null; }
+        else if (type === 's'){ value = sharedStrings[parseInt(raw, 10)] ?? ''; }
+        else if (type === 'str'){ value = raw; }
+        else if (type === 'b'){ value = raw === '1'; }
+        else { value = raw.indexOf('.') >= 0 || raw.indexOf('e') >= 0 || raw.indexOf('E') >= 0 ? parseFloat(raw) : parseInt(raw, 10); }
+      }
+      rowData[colIdx] = value;
+    }
+    rows[rNum] = rowData;
+  }
+  return rows;
+}
+
+async function parseUploadedWorkbook(file){
+  const buf = await file.arrayBuffer();
+  const zip = await readZipEntries(buf);
+
+  const dec = new TextDecoder('utf-8');
+  const workbookXmlBytes = await zip.extract('xl/workbook.xml');
+  if (!workbookXmlBytes) throw new Error('El archivo no contiene xl/workbook.xml — no es un .xlsx válido.');
+  const workbookXml = dec.decode(workbookXmlBytes);
+  const wbDoc = new DOMParser().parseFromString(workbookXml, 'application/xml');
+  const sheetEl = wbDoc.getElementsByTagName('sheet')[0];
+  const sheetName = sheetEl ? sheetEl.getAttribute('name') : '';
+
+  const sharedStringsBytes = await zip.extract('xl/sharedStrings.xml');
+  const sharedStrings = sharedStringsBytes ? parseSharedStrings(dec.decode(sharedStringsBytes)) : [];
+
+  // Encontrar la primera hoja de datos disponible
+  let sheetPath = 'xl/worksheets/sheet1.xml';
+  if (!zip.list.includes(sheetPath)){
+    sheetPath = zip.list.find(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
+  }
+  const sheetXmlBytes = await zip.extract(sheetPath);
+  if (!sheetXmlBytes) throw new Error('No se encontró la hoja de datos dentro del Excel.');
+  const rows = parseSheetRows(dec.decode(sheetXmlBytes), sharedStrings);
+
+  return { sheetName, rows };
+}
+
+/* ======================= Lógica de negocio (idéntica al proceso acordado) ======================= */
+
+function buildValidAndOdv(rows){
+  const rowNums = Object.keys(rows).map(n => parseInt(n, 10)).filter(n => n >= 2).sort((a,b) => a-b);
+  const valid = [];
+  const odv = [];
+  for (const r of rowNums){
+    const row = rows[r];
+    const pedido = row[2];
+    if (pedido !== undefined && pedido !== null && pedido !== ''){
+      const num = row[1];
+      const fabrica = row[3] != null ? String(row[3]).trim() : '';
+      const estatus = row[4];
+      valid.push({ num, pedido, fabrica, estatus });
+    }
+    const pedidoR = row[7];
+    if (pedidoR !== undefined && pedidoR !== null && pedidoR !== ''){
+      const motivo = row[10] != null ? String(row[10]).trim().toUpperCase() : '';
+      if (REJECT_TO_ODV.has(motivo)){
+        odv.push({ num: row[6], pedido: pedidoR, fabrica: row[8] != null ? String(row[8]).trim() : '', motivo });
+      }
+    }
+  }
+  return { valid, odv };
+}
+
+function extractFecha(sheetName){
+  const m = sheetName && sheetName.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m){
+    return new Date(parseInt(m[1],10), parseInt(m[2],10) - 1, parseInt(m[3],10));
+  }
+  return new Date();
+}
+
+function buildTitulo(fecha, wh){
+  const dia = DIAS[fecha.getDay()];
+  let t = `PEDIDOS EN RUTA DE EL DIA ${dia} ${fecha.getDate()} DE ${MESES[fecha.getMonth()+1]} DE ${fecha.getFullYear()}`;
+  if (wh) t += ` ALMACEN "${wh}"`;
+  return t;
+}
+
+/* ======================= Construcción de la vista de impresión (HTML, sin librerías) ======================= */
+
+const BLOCK_SIZE = 52;
+const ODV_ROWS = 13;
+
+function buildGeneralPagesHtml(titulo, valid, odv){
+  const n = valid.length;
+  const nBlocksMin = 3;
+  const nBlocks = Math.max(nBlocksMin, Math.ceil((n + ODV_ROWS + 1) / BLOCK_SIZE));
+  const lastBlockCapacity = BLOCK_SIZE - (ODV_ROWS + 1);
+
+  let html = '';
+  for (let b = 0; b < nBlocks; b++){
+    const isLast = (b === nBlocks - 1);
+    const rowsInBlock = isLast ? lastBlockCapacity : BLOCK_SIZE;
+    let rowsHtml = '';
+    for (let i = 0; i < rowsInBlock; i++){
+      const idx = b * BLOCK_SIZE + i;
+      const num = idx + 1;
+      const pedido = idx < n ? escapeHtml(String(valid[idx].pedido)) : '';
+      const area = idx < n ? escapeHtml(String(valid[idx].fabrica)) : '';
+      rowsHtml += `<tr><td class="num">${num}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
+    }
+    let odvHtml = '';
+    if (isLast){
+      odvHtml += `<tr class="odv-header"><td colspan="3">ODV</td></tr>`;
+      for (let i = 0; i < ODV_ROWS; i++){
+        const pedido = i < odv.length ? escapeHtml(String(odv[i].pedido)) : '';
+        const area = i < odv.length ? escapeHtml(String(odv[i].fabrica)) : '';
+        odvHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
+      }
+    }
+    html += `<section class="print-page">` +
+      `<div class="print-title">${escapeHtml(titulo)}</div>` +
+      `<table class="reloc"><thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
+      `<tbody>${rowsHtml}${odvHtml}</tbody></table>` +
+      `</section>`;
+  }
+  return html;
+}
+
+function buildAlmacenPagesHtml(titulo, wh, valid){
+  const pedidosWh = valid.filter(v => v.fabrica.toUpperCase().includes(wh));
+  const n = pedidosWh.length;
+  const nBlocks = Math.max(3, Math.ceil(n / BLOCK_SIZE));
+
+  let html = '';
+  for (let b = 0; b < nBlocks; b++){
+    let rowsHtml = '';
+    for (let i = 0; i < BLOCK_SIZE; i++){
+      const idx = b * BLOCK_SIZE + i;
+      const num = idx + 1;
+      const pedido = idx < n ? escapeHtml(String(pedidosWh[idx].pedido)) : '';
+      const area = idx < n ? escapeHtml(wh) : '';
+      rowsHtml += `<tr><td class="num">${num}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
+    }
+    html += `<section class="print-page">` +
+      `<div class="print-title">${escapeHtml(titulo)}</div>` +
+      `<table class="reloc"><thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
+      `<tbody>${rowsHtml}</tbody></table>` +
+      `</section>`;
+  }
+  return { html, count: n };
+}
+
+function buildPrintDocument(fecha, valid, odv){
+  const generalHtml = buildGeneralPagesHtml(buildTitulo(fecha), valid, odv);
+  const q = buildAlmacenPagesHtml(buildTitulo(fecha, 'Q'), 'Q', valid);
+  const a = buildAlmacenPagesHtml(buildTitulo(fecha, 'A'), 'A', valid);
+  return { html: generalHtml + q.html + a.html, counts: { q: q.count, a: a.count } };
+}
+
+/* ======================= UI ======================= */
+
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+const fnameEl = document.getElementById('fname');
+const genBtn = document.getElementById('genBtn');
+const resetBtn = document.getElementById('resetBtn');
+const statusEl = document.getElementById('status');
+const resultCard = document.getElementById('resultCard');
+const summaryTable = document.getElementById('summaryTable');
+const printBtn = document.getElementById('printBtn');
+const pdfBtn = document.getElementById('pdfBtn');
+const printArea = document.getElementById('printArea');
+
+let currentFile = null;
+let generatedName = 'Relacion_Ruta.pdf';
+
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('drag');
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if (e.target.files.length) setFile(e.target.files[0]); });
+
+function setFile(f){
+  currentFile = f;
+  fnameEl.textContent = f.name;
+  genBtn.disabled = false;
+  statusEl.textContent = '';
+  statusEl.className = 'status';
+  resultCard.style.display = 'none';
+}
+
+resetBtn.addEventListener('click', () => {
+  currentFile = null;
+  fileInput.value = ''; fnameEl.textContent = '';
+  genBtn.disabled = true;
+  statusEl.textContent = ''; statusEl.className = 'status';
+  resultCard.style.display = 'none';
+  printArea.innerHTML = '';
+});
+
+genBtn.addEventListener('click', async () => {
+  if (!currentFile) return;
+  genBtn.disabled = true;
+  statusEl.className = 'status';
+  statusEl.textContent = 'Leyendo el Excel...';
+  try{
+    const { sheetName, rows } = await parseUploadedWorkbook(currentFile);
+    statusEl.textContent = 'Aplicando reglas de negocio...';
+    const { valid, odv } = buildValidAndOdv(rows);
+    if (valid.length === 0){
+      throw new Error('No se encontraron pedidos válidos en las columnas Número/Pedido/Fábrica/Estatus. Revisa que el Excel tenga el formato esperado.');
+    }
+    const fecha = extractFecha(sheetName);
+
+    statusEl.textContent = 'Generando la vista de impresión...';
+    const { html, counts } = buildPrintDocument(fecha, valid, odv);
+    printArea.innerHTML = html;
+    const fdate = `${String(fecha.getDate()).padStart(2,'0')}_${MESES[fecha.getMonth()+1].slice(0,3)}_${fecha.getFullYear()}`;
+    generatedName = `Relacion_Ruta_${fdate}.pdf`;
+
+    summaryTable.innerHTML = `
+      <tr><th>Documento</th><th>Pedidos</th></tr>
+      <tr><td>Relación general</td><td>${valid.length}</td></tr>
+      <tr><td>Almacén Q</td><td>${counts.q}</td></tr>
+      <tr><td>Almacén A</td><td>${counts.a}</td></tr>
+      <tr class="odv-row"><td>ODV (pendiente/SM/SD)</td><td>${odv.length}</td></tr>
+    `;
+    resultCard.style.display = 'block';
+    statusEl.className = 'status ok';
+    statusEl.textContent = '¡Listo! Revisa el resumen y usa "Imprimir relación" o "Descargar PDF".';
+  } catch(err){
+    console.error(err);
+    statusEl.className = 'status err';
+    statusEl.textContent = 'Ocurrió un error: ' + err.message;
+  } finally {
+    genBtn.disabled = false;
+  }
+});
+
+printBtn.addEventListener('click', () => {
+  if (!printArea.innerHTML) return;
+  window.print();
+});
+
+pdfBtn.addEventListener('click', () => {
+  if (!printArea.innerHTML) return;
+  const originalText = pdfBtn.textContent;
+  pdfBtn.disabled = true;
+  pdfBtn.textContent = 'Generando PDF...';
+  const opt = {
+    margin: 0,
+    filename: generatedName,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+    pagebreak: { mode: ['css', 'legacy'] }
+  };
+  html2pdf().set(opt).from(printArea).save().then(() => {
+    pdfBtn.disabled = false;
+    pdfBtn.textContent = originalText;
+  }).catch(err => {
+    console.error(err);
+    pdfBtn.disabled = false;
+    pdfBtn.textContent = originalText;
+    statusEl.className = 'status err';
+    statusEl.textContent = 'Ocurrió un error generando el PDF: ' + err.message;
+  });
+});
+</script>
+</body>
+</html>
