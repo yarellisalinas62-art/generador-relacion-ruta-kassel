@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Generador de Relación de Ruta - Kassel Home and Living</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --green:#4CAF50; --green-light:#C6E0B4; --gray:#D9D9D9; --navy:#1F3864;
@@ -35,13 +36,39 @@
   ul.rules{font-size:13px; line-height:1.7; color:#333; padding-left:20px;}
   .badge{display:inline-block; background:var(--green-light); color:var(--navy); font-size:11px; font-weight:bold; padding:2px 8px; border-radius:10px; margin-left:6px;}
   footer{text-align:center; font-size:12px; color:#888; padding:20px;}
+
+  /* ---------- Vista de impresión (oculta en pantalla, visible solo al imprimir/exportar PDF) ---------- */
+  #printArea{ display:none; }
+  .print-page{ page-break-after:always; }
+  .print-page:last-child{ page-break-after:auto; }
+  .print-title{
+    font:bold 24pt Arial, sans-serif; text-align:center; background:#cccccc; color:#000;
+    border:1px solid #000; min-height:45pt; display:flex; align-items:center; justify-content:center;
+    margin-bottom:6pt;
+  }
+  table.reloc{ width:100%; border-collapse:collapse; table-layout:fixed; }
+  table.reloc th, table.reloc td{
+    border:1px solid #000; font:bold 9pt Arial, sans-serif; text-align:center; vertical-align:middle;
+    height:13.5pt; padding:0 4pt; overflow:hidden;
+  }
+  table.reloc th{ background:#cccccc; }
+  table.reloc td.num{ background:#cccccc; width:22%; }
+  table.reloc td.pedido{ width:56%; }
+  table.reloc td.area{ width:22%; }
+  table.reloc tr.odv-header td{ background:#cccccc; }
+
+  @media print{
+    body > *:not(#printArea){ display:none !important; }
+    #printArea{ display:block !important; }
+    @page{ size:A4 portrait; margin:10mm 8mm; }
+  }
 </style>
 </head>
 <body>
 
 <header>
   <h1>Generador de Relación de Ruta<span class="badge">Kassel Home and Living</span></h1>
-  <p>Sube el Excel de la ruta ya limpio ("Ruta_Final_Agrupada...") y descarga la Relación General + hojas de Almacén Q y A, listas para imprimir.</p>
+  <p>Sube el Excel de la ruta ya limpio ("Ruta_Final_Agrupada...") e imprime directo la Relación General + hojas de Almacén Q y A, o descárgalas en PDF.</p>
 </header>
 
 <main>
@@ -64,7 +91,8 @@
     <h2>2. Resultado</h2>
     <table class="summary" id="summaryTable"></table>
     <div class="actions">
-      <button id="downloadBtn">Descargar Excel (.xlsx)</button>
+      <button id="printBtn">Imprimir relación</button>
+      <button class="secondary" id="pdfBtn">Descargar PDF</button>
     </div>
   </div>
 
@@ -72,15 +100,18 @@
     <h2>Reglas que aplica esta herramienta</h2>
     <ul class="rules">
       <li>Toma solo la tabla izquierda (Número, Pedido, Fábrica, Estatus) como pedidos válidos para almacenes, respetando el orden exacto de las filas del Excel.</li>
-      <li>Genera 3 hojas: <strong>RELACION GENERAL</strong> (todos los pedidos válidos + apartado ODV), <strong>ALMACEN Q</strong> y <strong>ALMACEN A</strong>. Almacén K ya no recibe hoja propia.</li>
+      <li>Genera 3 documentos: <strong>RELACION GENERAL</strong> (todos los pedidos válidos + apartado ODV), <strong>ALMACEN Q</strong> y <strong>ALMACEN A</strong>. Almacén K ya no recibe hoja propia.</li>
       <li>El apartado <strong>ODV</strong> (solo en la relación general) incluye los pedidos de la tabla derecha cuyo motivo sea <strong>Pendiente, SM o SD</strong>. Cancelado y Stand By se descartan por completo.</li>
       <li>En las hojas de Almacén Q/A, la columna AREA muestra solo la letra de ese almacén; en la relación general muestra el valor de Fábrica tal cual viene en el Excel.</li>
+      <li>Cada página impresa muestra un bloque de 52 pedidos numerados. "Imprimir relación" abre el diálogo de impresión del navegador (desde ahí también puedes elegir "Guardar como PDF"); "Descargar PDF" genera directamente el archivo.</li>
       <li>Todo el procesamiento ocurre en tu propio navegador: el archivo no se sube a ningún servidor.</li>
     </ul>
   </div>
 </main>
 
 <footer>Herramienta interna — Kassel Home and Living</footer>
+
+<div id="printArea"></div>
 
 <script>
 /* ======================= Utilidades generales ======================= */
@@ -105,7 +136,7 @@ function indexToColLetter(idx){
   }
   return s;
 }
-function escapeXml(str){
+function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, ch => ({
     '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;'
   }[ch]));
@@ -278,421 +309,193 @@ function buildTitulo(fecha, wh){
   return t;
 }
 
-/* ======================= Construcción del XLSX de salida (OOXML manual, sin librerías) ======================= */
+/* ======================= Construcción de la vista de impresión (HTML, sin librerías) ======================= */
 
 const BLOCK_SIZE = 52;
-const COLS_PER_BLOCK = 3;
-const GAP_COLS = 1;
 const ODV_ROWS = 13;
 
-// Filas fijas por hoja (según plantilla): 1 margen, 2 titulo, 3 espacio, 4 encabezado, 5+ datos
-const ROW_TITLE = 2;
-const ROW_SPACER = 3;
-const ROW_HEADER = 4;
-const ROW_DATA_START = 5;
-
-// Anchos/alturas (según plantilla, letra grande para impresión)
-const COL_W_NUM = 10.71, COL_W_PEDIDO = 27.70, COL_W_AREA = 10.71, COL_W_GAP = 2;
-const ROW_H_TOP = 8, ROW_H_TITLE = 45, ROW_H_SPACER = 6, ROW_H_HEADER = 26.5, ROW_H_DATA = 26.5;
-
-// Estilos: 0 default, 1 titulo, 2 header/odv-header (gris), 3 data (blanco), 4 num-dato (gris), 5 nota
-const S = { DEFAULT:0, TITLE:1, HEADER:2, DATA:3, DATA_NUM:4, NOTE:5 };
-
-class SheetBuilder{
-  constructor(){
-    this.cells = {}; // "R:C" -> {value, style, type}
-    this.merges = [];
-    this.colWidths = {}; // colIdx -> width
-    this.rowHeights = {}; // rowIdx -> height
-    this.maxRow = 0; this.maxCol = 0;
-  }
-  setCell(r, c, value, style){
-    this.cells[r+':'+c] = { value, style };
-    if (r > this.maxRow) this.maxRow = r;
-    if (c > this.maxCol) this.maxCol = c;
-  }
-  merge(r1, c1, r2, c2, style){
-    this.merges.push([r1,c1,r2,c2]);
-    for (let cc = c1; cc <= c2; cc++){
-      for (let rr = r1; rr <= r2; rr++){
-        if (!this.cells[rr+':'+cc]) this.setCell(rr, cc, (rr===r1 && cc===c1) ? this.cells[r1+':'+c1]?.value : null, style);
-      }
-    }
-  }
-  setWidth(c, w){ this.colWidths[c] = w; }
-  setRowHeight(r, h){ this.rowHeights[r] = h; }
-
-  toXml(){
-    let colsXml = '';
-    const colIdxs = Object.keys(this.colWidths).map(Number).sort((a,b)=>a-b);
-    for (const c of colIdxs){
-      colsXml += `<col min="${c}" max="${c}" width="${this.colWidths[c]}" customWidth="1"/>`;
-    }
-    // agrupar celdas por fila
-    const rowsMap = {};
-    for (const key in this.cells){
-      const [r,c] = key.split(':').map(Number);
-      if (!rowsMap[r]) rowsMap[r] = [];
-      rowsMap[r].push(c);
-    }
-    let sheetData = '';
-    const allRowNums = new Set(Object.keys(rowsMap).map(Number));
-    for (const r of Object.keys(this.rowHeights)) allRowNums.add(Number(r));
-    const rowNums = Array.from(allRowNums).sort((a,b)=>a-b);
-    for (const r of rowNums){
-      const cols = (rowsMap[r] || []).sort((a,b)=>a-b);
-      let rowXml = '';
-      for (const c of cols){
-        const cell = this.cells[r+':'+c];
-        const ref = indexToColLetter(c) + r;
-        if (cell.value === null || cell.value === undefined || cell.value === ''){
-          rowXml += `<c r="${ref}" s="${cell.style}"/>`;
-        } else if (typeof cell.value === 'number'){
-          rowXml += `<c r="${ref}" s="${cell.style}"><v>${cell.value}</v></c>`;
-        } else {
-          rowXml += `<c r="${ref}" s="${cell.style}" t="inlineStr"><is><t xml:space="preserve">${escapeXml(cell.value)}</t></is></c>`;
-        }
-      }
-      const ht = this.rowHeights[r];
-      const htAttr = ht ? ` ht="${ht}" customHeight="1"` : '';
-      sheetData += `<row r="${r}"${htAttr}>${rowXml}</row>`;
-    }
-    let mergeXml = '';
-    if (this.merges.length){
-      mergeXml = `<mergeCells count="${this.merges.length}">` +
-        this.merges.map(([r1,c1,r2,c2]) => `<mergeCell ref="${indexToColLetter(c1)}${r1}:${indexToColLetter(c2)}${r2}"/>`).join('') +
-        `</mergeCells>`;
-    }
-    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-      (colsXml ? `<cols>${colsXml}</cols>` : '') +
-      `<sheetData>${sheetData}</sheetData>` +
-      mergeXml +
-      `<pageMargins left="0.3" right="0.3" top="0.4" bottom="0.4" header="0.2" footer="0.2"/>` +
-      `<pageSetup paperSize="9" orientation="portrait" scale="100"/>` +
-      `</worksheet>`;
-  }
-}
-
-function writeBlockHeader(sb, numCol, pedidoCol, areaCol, row){
-  sb.setCell(row, numCol, 'NUM', S.HEADER);
-  sb.setCell(row, pedidoCol, 'PEDIDO', S.HEADER);
-  sb.setCell(row, areaCol, 'AREA', S.HEADER);
-}
-
-function setUpCommonRows(sb, totalCols){
-  sb.setRowHeight(1, ROW_H_TOP);
-  sb.setRowHeight(ROW_TITLE, ROW_H_TITLE);
-  sb.setRowHeight(ROW_SPACER, ROW_H_SPACER);
-  sb.setRowHeight(ROW_HEADER, ROW_H_HEADER);
-  // fila 3 en blanco: se estila igual que default (sin bordes), solo ocupa espacio
-}
-
-function buildGeneralSheet(titulo, valid, odv){
-  const sb = new SheetBuilder();
-  const nBlocksMin = 3;
+function buildGeneralPagesHtml(titulo, valid, odv){
   const n = valid.length;
+  const nBlocksMin = 3;
   const nBlocks = Math.max(nBlocksMin, Math.ceil((n + ODV_ROWS + 1) / BLOCK_SIZE));
-  const totalCols = nBlocks * COLS_PER_BLOCK + (nBlocks - 1) * GAP_COLS;
-
-  sb.merge(ROW_TITLE, 1, ROW_TITLE, totalCols, S.TITLE);
-  sb.setCell(ROW_TITLE, 1, titulo, S.TITLE);
-  setUpCommonRows(sb, totalCols);
-
   const lastBlockCapacity = BLOCK_SIZE - (ODV_ROWS + 1);
 
+  let html = '';
   for (let b = 0; b < nBlocks; b++){
-    const colStart = b * (COLS_PER_BLOCK + GAP_COLS) + 1;
-    const numCol = colStart, pedidoCol = colStart + 1, areaCol = colStart + 2;
-    writeBlockHeader(sb, numCol, pedidoCol, areaCol, ROW_HEADER);
-    sb.setWidth(numCol, COL_W_NUM); sb.setWidth(pedidoCol, COL_W_PEDIDO); sb.setWidth(areaCol, COL_W_AREA);
-    if (b < nBlocks - 1) sb.setWidth(colStart + COLS_PER_BLOCK, COL_W_GAP);
-
     const isLast = (b === nBlocks - 1);
     const rowsInBlock = isLast ? lastBlockCapacity : BLOCK_SIZE;
-
+    let rowsHtml = '';
     for (let i = 0; i < rowsInBlock; i++){
       const idx = b * BLOCK_SIZE + i;
-      const row = ROW_DATA_START + i;
-      sb.setRowHeight(row, ROW_H_DATA);
-      sb.setCell(row, numCol, idx + 1, S.DATA_NUM);
-      if (idx < n){
-        sb.setCell(row, pedidoCol, String(valid[idx].pedido), S.DATA);
-        sb.setCell(row, areaCol, String(valid[idx].fabrica), S.DATA);
-      } else {
-        sb.setCell(row, pedidoCol, '', S.DATA);
-        sb.setCell(row, areaCol, '', S.DATA);
-      }
+      const num = idx + 1;
+      const pedido = idx < n ? escapeHtml(String(valid[idx].pedido)) : '';
+      const area = idx < n ? escapeHtml(String(valid[idx].fabrica)) : '';
+      rowsHtml += `<tr><td class="num">${num}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
     }
-
+    let odvHtml = '';
     if (isLast){
-      const odvTitleRow = ROW_DATA_START + rowsInBlock;
-      sb.setRowHeight(odvTitleRow, ROW_H_HEADER);
-      sb.merge(odvTitleRow, numCol, odvTitleRow, areaCol, S.HEADER);
-      sb.setCell(odvTitleRow, numCol, 'ODV', S.HEADER);
+      odvHtml += `<tr class="odv-header"><td colspan="3">ODV</td></tr>`;
       for (let i = 0; i < ODV_ROWS; i++){
-        const row = odvTitleRow + 1 + i;
-        sb.setRowHeight(row, ROW_H_DATA);
-        sb.setCell(row, numCol, i + 1, S.DATA_NUM);
-        if (i < odv.length){
-          sb.setCell(row, pedidoCol, String(odv[i].pedido), S.DATA);
-          sb.setCell(row, areaCol, String(odv[i].fabrica), S.DATA);
-        } else {
-          sb.setCell(row, pedidoCol, '', S.DATA);
-          sb.setCell(row, areaCol, '', S.DATA);
-        }
+        const pedido = i < odv.length ? escapeHtml(String(odv[i].pedido)) : '';
+        const area = i < odv.length ? escapeHtml(String(odv[i].fabrica)) : '';
+        odvHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
       }
     }
+    html += `<section class="print-page">` +
+      `<div class="print-title">${escapeHtml(titulo)}</div>` +
+      `<table class="reloc"><thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
+      `<tbody>${rowsHtml}${odvHtml}</tbody></table>` +
+      `</section>`;
   }
-
-  const noteRow = ROW_DATA_START + BLOCK_SIZE + 1;
-  sb.merge(noteRow, 1, noteRow, totalCols, S.NOTE);
-  sb.setCell(noteRow, 1,
-    `Total pedidos en ruta: ${n}. Apartado ODV: pedidos con estatus Pendiente, SM o SD (${odv.length}), para seguimiento a futuro en logistica. Cancelado y Stand By se excluyen por completo.`,
-    S.NOTE);
-
-  return sb;
+  return html;
 }
 
-function buildAlmacenSheet(titulo, wh, valid){
-  const sb = new SheetBuilder();
+function buildAlmacenPagesHtml(titulo, wh, valid){
   const pedidosWh = valid.filter(v => v.fabrica.toUpperCase().includes(wh));
   const n = pedidosWh.length;
   const nBlocks = Math.max(3, Math.ceil(n / BLOCK_SIZE));
-  const totalCols = nBlocks * COLS_PER_BLOCK + (nBlocks - 1) * GAP_COLS;
 
-  sb.merge(ROW_TITLE, 1, ROW_TITLE, totalCols, S.TITLE);
-  sb.setCell(ROW_TITLE, 1, titulo, S.TITLE);
-  setUpCommonRows(sb, totalCols);
-
+  let html = '';
   for (let b = 0; b < nBlocks; b++){
-    const colStart = b * (COLS_PER_BLOCK + GAP_COLS) + 1;
-    const numCol = colStart, pedidoCol = colStart + 1, areaCol = colStart + 2;
-    writeBlockHeader(sb, numCol, pedidoCol, areaCol, ROW_HEADER);
-    sb.setWidth(numCol, COL_W_NUM); sb.setWidth(pedidoCol, COL_W_PEDIDO); sb.setWidth(areaCol, COL_W_AREA);
-    if (b < nBlocks - 1) sb.setWidth(colStart + COLS_PER_BLOCK, COL_W_GAP);
-
+    let rowsHtml = '';
     for (let i = 0; i < BLOCK_SIZE; i++){
       const idx = b * BLOCK_SIZE + i;
-      const row = ROW_DATA_START + i;
-      sb.setRowHeight(row, ROW_H_DATA);
-      sb.setCell(row, numCol, idx + 1, S.DATA_NUM);
-      if (idx < n){
-        sb.setCell(row, pedidoCol, String(pedidosWh[idx].pedido), S.DATA);
-        sb.setCell(row, areaCol, wh, S.DATA);
-      } else {
-        sb.setCell(row, pedidoCol, '', S.DATA);
-        sb.setCell(row, areaCol, '', S.DATA);
+      const num = idx + 1;
+      const pedido = idx < n ? escapeHtml(String(pedidosWh[idx].pedido)) : '';
+      const area = idx < n ? escapeHtml(wh) : '';
+      rowsHtml += `<tr><td class="num">${num}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
+    }
+    html += `<section class="print-page">` +
+      `<div class="print-title">${escapeHtml(titulo)}</div>` +
+      `<table class="reloc"><thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
+      `<tbody>${rowsHtml}</tbody></table>` +
+      `</section>`;
+  }
+  return { html, count: n };
+}
+
+function buildPrintDocument(fecha, valid, odv){
+  const generalHtml = buildGeneralPagesHtml(buildTitulo(fecha), valid, odv);
+  const q = buildAlmacenPagesHtml(buildTitulo(fecha, 'Q'), 'Q', valid);
+  const a = buildAlmacenPagesHtml(buildTitulo(fecha, 'A'), 'A', valid);
+  return { html: generalHtml + q.html + a.html, counts: { q: q.count, a: a.count } };
+}
+
+/* ======================= Construcción del PDF (jsPDF vectorial, sin html2canvas) =======================
+   Dibuja directamente con jsPDF (texto + rectángulos) en vez de "fotografiar" el HTML con html2canvas:
+   el resultado es un PDF nítido (texto real, no una imagen) y evita los problemas de captura de
+   elementos ocultos/fuera de pantalla que tiene html2canvas. La geometría reproduce exactamente el
+   diseño de impresión (misma hoja A4, márgenes 10mm/8mm, título 24pt, celdas 9pt/13.5pt de alto). */
+
+function buildPdfDoc(fecha, valid, odv){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
+
+  const MARGIN_TB = 28.35, MARGIN_LR = 22.68; // 10mm / 8mm en puntos
+  const PAGE_W = doc.internal.pageSize.getWidth();
+  const CONTENT_W = PAGE_W - 2 * MARGIN_LR;
+  const TITLE_FONT = 24, TITLE_MIN_H = 45, TITLE_GAP = 6;
+  const ROW_H = 13.5, CELL_FONT = 9;
+  const COL_W = { num: CONTENT_W * 0.22, pedido: CONTENT_W * 0.56, area: CONTENT_W * 0.22 };
+  let firstPage = true;
+
+  function drawTitleBar(x0, y0, titulo){
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(TITLE_FONT);
+    const maxWidth = CONTENT_W - 16;
+    const lines = doc.splitTextToSize(titulo, maxWidth);
+    const barH = lines.length <= 1 ? TITLE_MIN_H : 58;
+    doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
+    doc.rect(x0, y0, CONTENT_W, barH, 'FD');
+    doc.setTextColor(0, 0, 0);
+    const lineH = TITLE_FONT * 1.15;
+    const startY = y0 + (barH - lines.length * lineH) / 2 + lineH / 2;
+    lines.forEach((ln, i) => doc.text(ln, x0 + CONTENT_W / 2, startY + i * lineH, { align: 'center', baseline: 'middle' }));
+    return barH;
+  }
+
+  function drawRow(x0, y, num, pedido, area){
+    doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(CELL_FONT); doc.setTextColor(0, 0, 0);
+    doc.setFillColor(204, 204, 204);
+    doc.rect(x0, y, COL_W.num, ROW_H, 'FD');
+    doc.text(String(num), x0 + COL_W.num / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.setFillColor(255, 255, 255);
+    doc.rect(x0 + COL_W.num, y, COL_W.pedido, ROW_H, 'S');
+    doc.text(String(pedido || ''), x0 + COL_W.num + COL_W.pedido / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, ROW_H, 'S');
+    doc.text(String(area || ''), x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+  }
+
+  function drawHeaderRow(x0, y){
+    doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(CELL_FONT); doc.setTextColor(0, 0, 0);
+    doc.rect(x0, y, COL_W.num, ROW_H, 'FD');
+    doc.text('NUM', x0 + COL_W.num / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + COL_W.num, y, COL_W.pedido, ROW_H, 'FD');
+    doc.text('PEDIDO', x0 + COL_W.num + COL_W.pedido / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, ROW_H, 'FD');
+    doc.text('AREA', x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+  }
+
+  function drawOdvHeaderRow(x0, y){
+    doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
+    doc.rect(x0, y, CONTENT_W, ROW_H, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(CELL_FONT); doc.setTextColor(0, 0, 0);
+    doc.text('ODV', x0 + CONTENT_W / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+  }
+
+  function drawPage(titulo, rows, odvRows){
+    if (!firstPage) doc.addPage(); else firstPage = false;
+    const x0 = MARGIN_LR, y0 = MARGIN_TB;
+    const barH = drawTitleBar(x0, y0, titulo);
+    let y = y0 + barH + TITLE_GAP;
+    drawHeaderRow(x0, y); y += ROW_H;
+    rows.forEach(r => { drawRow(x0, y, r.num, r.pedido, r.area); y += ROW_H; });
+    if (odvRows){
+      drawOdvHeaderRow(x0, y); y += ROW_H;
+      odvRows.forEach(r => { drawRow(x0, y, r.num, r.pedido, r.area); y += ROW_H; });
+    }
+  }
+
+  const n = valid.length;
+  const nBlocksMin = 3;
+  const nBlocks = Math.max(nBlocksMin, Math.ceil((n + ODV_ROWS + 1) / BLOCK_SIZE));
+  const lastBlockCapacity = BLOCK_SIZE - (ODV_ROWS + 1);
+  const tituloGeneral = buildTitulo(fecha);
+  for (let b = 0; b < nBlocks; b++){
+    const isLast = (b === nBlocks - 1);
+    const rowsInBlock = isLast ? lastBlockCapacity : BLOCK_SIZE;
+    const rows = [];
+    for (let i = 0; i < rowsInBlock; i++){
+      const idx = b * BLOCK_SIZE + i;
+      rows.push({ num: idx + 1, pedido: idx < n ? valid[idx].pedido : '', area: idx < n ? valid[idx].fabrica : '' });
+    }
+    let odvRows = null;
+    if (isLast){
+      odvRows = [];
+      for (let i = 0; i < ODV_ROWS; i++){
+        odvRows.push({ num: i + 1, pedido: i < odv.length ? odv[i].pedido : '', area: i < odv.length ? odv[i].fabrica : '' });
       }
     }
+    drawPage(tituloGeneral, rows, odvRows);
   }
 
-  const noteRow = ROW_DATA_START + BLOCK_SIZE + 1;
-  sb.merge(noteRow, 1, noteRow, totalCols, S.NOTE);
-  sb.setCell(noteRow, 1, `Total pedidos almacen ${wh}: ${n}.`, S.NOTE);
-
-  return { sb, count: n };
-}
-
-function stylesXml(){
-  // Paleta según la plantilla del usuario: escala de grises, negritas, letra grande — pensada para
-  // imprimirse en blanco y negro sin gastar tinta de color.
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-  `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-  `<fonts count="4">` +
-    `<font><sz val="14"/><name val="Arial"/></font>` +                                    /*0 default*/
-    `<font><sz val="24"/><b/><color rgb="FF000000"/><name val="Arial"/></font>` +          /*1 titulo*/
-    `<font><sz val="16"/><b/><color rgb="FF000000"/><name val="Arial"/></font>` +          /*2 encabezado / num*/
-    `<font><sz val="8"/><i/><color rgb="FF808080"/><name val="Arial"/></font>` +           /*3 nota*/
-  `</fonts>` +
-  `<fills count="3">` +
-    `<fill><patternFill patternType="none"/></fill>` +
-    `<fill><patternFill patternType="gray125"/></fill>` +
-    `<fill><patternFill patternType="solid"><fgColor rgb="FFCCCCCC"/><bgColor indexed="64"/></patternFill></fill>` + /*2 gris (titulo, encabezado, columna NUM)*/
-  `</fills>` +
-  `<borders count="2">` +
-    `<border><left/><right/><top/><bottom/><diagonal/></border>` +
-    `<border><left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right><top style="thin"><color rgb="FF000000"/></top><bottom style="thin"><color rgb="FF000000"/></bottom><diagonal/></border>` +
-  `</borders>` +
-  `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-  `<cellXfs count="6">` +
-    `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +                                                                     /*0 default*/
-    `<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` + /*1 title*/
-    `<xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` + /*2 header/odv-header (gris)*/
-    `<xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` + /*3 data (blanco)*/
-    `<xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` + /*4 data-num (gris, columna NUM)*/
-    `<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>` + /*5 nota*/
-  `</cellXfs>` +
-  `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
-  `</styleSheet>`;
-}
-
-function workbookXml(sheetNames){
-  const sheetsXml = sheetNames.map((name, i) =>
-    `<sheet name="${escapeXml(name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-    `<sheets>${sheetsXml}</sheets></workbook>`;
-}
-
-function contentTypesXml(nSheets){
-  let overrides = `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
-    `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>`;
-  for (let i = 1; i <= nSheets; i++){
-    overrides += `<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`;
-  }
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
-    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
-    `<Default Extension="xml" ContentType="application/xml"/>` +
-    overrides + `</Types>`;
-}
-
-function rootRelsXml(){
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
-    `</Relationships>`;
-}
-
-function workbookRelsXml(nSheets){
-  let rels = '';
-  for (let i = 1; i <= nSheets; i++){
-    rels += `<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i}.xml"/>`;
-  }
-  rels += `<Relationship Id="rId${nSheets+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`;
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`;
-}
-
-/* ---------- Escritor ZIP minimalista (método store, sin dependencias) ---------- */
-
-function makeCrcTable(){
-  const table = [];
-  for (let n = 0; n < 256; n++){
-    let c = n;
-    for (let k = 0; k < 8; k++){
-      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+  ['Q', 'A'].forEach(wh => {
+    const pedidosWh = valid.filter(v => v.fabrica.toUpperCase().includes(wh));
+    const nn = pedidosWh.length;
+    const nb = Math.max(3, Math.ceil(nn / BLOCK_SIZE));
+    const titulo = buildTitulo(fecha, wh);
+    for (let b = 0; b < nb; b++){
+      const rows = [];
+      for (let i = 0; i < BLOCK_SIZE; i++){
+        const idx = b * BLOCK_SIZE + i;
+        rows.push({ num: idx + 1, pedido: idx < nn ? pedidosWh[idx].pedido : '', area: idx < nn ? wh : '' });
+      }
+      drawPage(titulo, rows, null);
     }
-    table[n] = c >>> 0;
-  }
-  return table;
-}
-const CRC_TABLE = makeCrcTable();
-function crc32(bytes){
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < bytes.length; i++){
-    crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ bytes[i]) & 0xFF];
-  }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
-}
+  });
 
-class ByteWriter{
-  constructor(){ this.parts = []; this.length = 0; }
-  pushBytes(u8){ this.parts.push(u8); this.length += u8.length; }
-  pushU16(v){ const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, v, true); this.pushBytes(b); }
-  pushU32(v){ const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v, true); this.pushBytes(b); }
-  pushStr(s){ this.pushBytes(new TextEncoder().encode(s)); }
-  toUint8Array(){
-    const out = new Uint8Array(this.length);
-    let off = 0;
-    for (const p of this.parts){ out.set(p, off); off += p.length; }
-    return out;
-  }
-}
-
-function buildZip(files){
-  // files: [{name, data: Uint8Array}]
-  const localWriter = new ByteWriter();
-  const centralWriter = new ByteWriter();
-  const offsets = [];
-
-  for (const f of files){
-    const nameBytes = new TextEncoder().encode(f.name);
-    const crc = crc32(f.data);
-    const offset = localWriter.length;
-    offsets.push(offset);
-
-    localWriter.pushU32(0x04034b50);
-    localWriter.pushU16(20);
-    localWriter.pushU16(0);
-    localWriter.pushU16(0);
-    localWriter.pushU16(0);
-    localWriter.pushU16(0);
-    localWriter.pushU32(crc);
-    localWriter.pushU32(f.data.length);
-    localWriter.pushU32(f.data.length);
-    localWriter.pushU16(nameBytes.length);
-    localWriter.pushU16(0);
-    localWriter.pushBytes(nameBytes);
-    localWriter.pushBytes(f.data);
-  }
-
-  for (let i = 0; i < files.length; i++){
-    const f = files[i];
-    const nameBytes = new TextEncoder().encode(f.name);
-    const crc = crc32(f.data);
-    centralWriter.pushU32(0x02014b50);
-    centralWriter.pushU16(20);
-    centralWriter.pushU16(20);
-    centralWriter.pushU16(0);
-    centralWriter.pushU16(0);
-    centralWriter.pushU16(0);
-    centralWriter.pushU16(0);
-    centralWriter.pushU32(crc);
-    centralWriter.pushU32(f.data.length);
-    centralWriter.pushU32(f.data.length);
-    centralWriter.pushU16(nameBytes.length);
-    centralWriter.pushU16(0);
-    centralWriter.pushU16(0);
-    centralWriter.pushU16(0);
-    centralWriter.pushU16(0);
-    centralWriter.pushU32(0);
-    centralWriter.pushU32(offsets[i]);
-    centralWriter.pushBytes(nameBytes);
-  }
-
-  const localBytes = localWriter.toUint8Array();
-  const centralBytes = centralWriter.toUint8Array();
-
-  const eocd = new ByteWriter();
-  eocd.pushU32(0x06054b50);
-  eocd.pushU16(0);
-  eocd.pushU16(0);
-  eocd.pushU16(files.length);
-  eocd.pushU16(files.length);
-  eocd.pushU32(centralBytes.length);
-  eocd.pushU32(localBytes.length);
-  eocd.pushU16(0);
-
-  const out = new Uint8Array(localBytes.length + centralBytes.length + eocd.length);
-  out.set(localBytes, 0);
-  out.set(centralBytes, localBytes.length);
-  out.set(eocd.toUint8Array(), localBytes.length + centralBytes.length);
-  return out;
-}
-
-function buildOutputXlsx(fecha, valid, odv){
-  const generalSb = buildGeneralSheet(buildTitulo(fecha), valid, odv);
-  const qResult = buildAlmacenSheet(buildTitulo(fecha, 'Q'), 'Q', valid);
-  const aResult = buildAlmacenSheet(buildTitulo(fecha, 'A'), 'A', valid);
-
-  const sheetNames = ['RELACION GENERAL', 'ALMACEN Q', 'ALMACEN A'];
-  const enc = new TextEncoder();
-
-  const files = [
-    { name: '[Content_Types].xml', data: enc.encode(contentTypesXml(3)) },
-    { name: '_rels/.rels', data: enc.encode(rootRelsXml()) },
-    { name: 'xl/workbook.xml', data: enc.encode(workbookXml(sheetNames)) },
-    { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(workbookRelsXml(3)) },
-    { name: 'xl/styles.xml', data: enc.encode(stylesXml()) },
-    { name: 'xl/worksheets/sheet1.xml', data: enc.encode(generalSb.toXml()) },
-    { name: 'xl/worksheets/sheet2.xml', data: enc.encode(qResult.sb.toXml()) },
-    { name: 'xl/worksheets/sheet3.xml', data: enc.encode(aResult.sb.toXml()) },
-  ];
-
-  const zipBytes = buildZip(files);
-  return { zipBytes, counts: { q: qResult.count, a: aResult.count } };
+  return doc;
 }
 
 /* ======================= UI ======================= */
@@ -705,11 +508,13 @@ const resetBtn = document.getElementById('resetBtn');
 const statusEl = document.getElementById('status');
 const resultCard = document.getElementById('resultCard');
 const summaryTable = document.getElementById('summaryTable');
-const downloadBtn = document.getElementById('downloadBtn');
+const printBtn = document.getElementById('printBtn');
+const pdfBtn = document.getElementById('pdfBtn');
+const printArea = document.getElementById('printArea');
 
 let currentFile = null;
-let generatedBlob = null;
-let generatedName = 'Relacion_Ruta.xlsx';
+let generatedName = 'Relacion_Ruta.pdf';
+let lastValid = null, lastOdv = null, lastFecha = null;
 
 drop.addEventListener('click', () => fileInput.click());
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
@@ -730,11 +535,13 @@ function setFile(f){
 }
 
 resetBtn.addEventListener('click', () => {
-  currentFile = null; generatedBlob = null;
+  currentFile = null;
+  lastValid = null; lastOdv = null; lastFecha = null;
   fileInput.value = ''; fnameEl.textContent = '';
   genBtn.disabled = true;
   statusEl.textContent = ''; statusEl.className = 'status';
   resultCard.style.display = 'none';
+  printArea.innerHTML = '';
 });
 
 genBtn.addEventListener('click', async () => {
@@ -750,12 +557,13 @@ genBtn.addEventListener('click', async () => {
       throw new Error('No se encontraron pedidos válidos en las columnas Número/Pedido/Fábrica/Estatus. Revisa que el Excel tenga el formato esperado.');
     }
     const fecha = extractFecha(sheetName);
+    lastValid = valid; lastOdv = odv; lastFecha = fecha;
 
-    statusEl.textContent = 'Generando el Excel de salida...';
-    const { zipBytes, counts } = buildOutputXlsx(fecha, valid, odv);
-    generatedBlob = new Blob([zipBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    statusEl.textContent = 'Generando la vista de impresión...';
+    const { html, counts } = buildPrintDocument(fecha, valid, odv);
+    printArea.innerHTML = html;
     const fdate = `${String(fecha.getDate()).padStart(2,'0')}_${MESES[fecha.getMonth()+1].slice(0,3)}_${fecha.getFullYear()}`;
-    generatedName = `Relacion_Ruta_${fdate}.xlsx`;
+    generatedName = `Relacion_Ruta_${fdate}.pdf`;
 
     summaryTable.innerHTML = `
       <tr><th>Documento</th><th>Pedidos</th></tr>
@@ -766,7 +574,7 @@ genBtn.addEventListener('click', async () => {
     `;
     resultCard.style.display = 'block';
     statusEl.className = 'status ok';
-    statusEl.textContent = '¡Listo! Revisa el resumen y descarga el Excel.';
+    statusEl.textContent = '¡Listo! Revisa el resumen y usa "Imprimir relación" o "Descargar PDF".';
   } catch(err){
     console.error(err);
     statusEl.className = 'status err';
@@ -776,13 +584,27 @@ genBtn.addEventListener('click', async () => {
   }
 });
 
-downloadBtn.addEventListener('click', () => {
-  if (!generatedBlob) return;
-  const url = URL.createObjectURL(generatedBlob);
-  const a = document.createElement('a');
-  a.href = url; a.download = generatedName;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+printBtn.addEventListener('click', () => {
+  if (!printArea.innerHTML) return;
+  window.print();
+});
+
+pdfBtn.addEventListener('click', () => {
+  if (!lastValid) return;
+  const originalText = pdfBtn.textContent;
+  pdfBtn.disabled = true;
+  pdfBtn.textContent = 'Generando PDF...';
+  try {
+    const doc = buildPdfDoc(lastFecha, lastValid, lastOdv);
+    doc.save(generatedName);
+  } catch(err){
+    console.error(err);
+    statusEl.className = 'status err';
+    statusEl.textContent = 'Ocurrió un error generando el PDF: ' + err.message;
+  } finally {
+    pdfBtn.disabled = false;
+    pdfBtn.textContent = originalText;
+  }
 });
 </script>
 </body>
