@@ -48,8 +48,8 @@
   }
   table.reloc{ width:100%; border-collapse:collapse; table-layout:fixed; }
   table.reloc th, table.reloc td{
-    border:1px solid #000; font:bold 9pt Arial, sans-serif; text-align:center; vertical-align:middle;
-    height:13.5pt; padding:0 4pt; overflow:hidden;
+    border:1px solid #000; font-family:Arial, sans-serif; font-weight:bold; text-align:center; vertical-align:middle;
+    height:var(--rowH, 13.5pt); font-size:var(--cellFont, 9pt); padding:0 4pt; overflow:hidden;
   }
   table.reloc th{ background:#cccccc; }
   table.reloc td.num{ background:#cccccc; width:22%; }
@@ -103,7 +103,7 @@
       <li>Genera 3 documentos: <strong>RELACION GENERAL</strong> (todos los pedidos válidos + apartado ODV), <strong>ALMACEN Q</strong> y <strong>ALMACEN A</strong>. Almacén K ya no recibe hoja propia.</li>
       <li>El apartado <strong>ODV</strong> (solo en la relación general) incluye los pedidos de la tabla derecha cuyo motivo sea <strong>Pendiente, SM o SD</strong>. Cancelado y Stand By se descartan por completo.</li>
       <li>En las hojas de Almacén Q/A, la columna AREA muestra solo la letra de ese almacén; en la relación general muestra el valor de Fábrica tal cual viene en el Excel.</li>
-      <li>Cada página impresa muestra un bloque de 52 pedidos numerados. "Imprimir relación" abre el diálogo de impresión del navegador (desde ahí también puedes elegir "Guardar como PDF"); "Descargar PDF" genera directamente el archivo.</li>
+      <li>Cada relación (general, almacén Q, almacén A) sale siempre en una sola hoja: el tamaño de letra de la tabla se ajusta automáticamente según cuántos pedidos traiga el día. "Imprimir relación" abre el diálogo de impresión del navegador (desde ahí también puedes elegir "Guardar como PDF"); "Descargar PDF" genera directamente el archivo (3 páginas: general, almacén Q y almacén A).</li>
       <li>Todo el procesamiento ocurre en tu propio navegador: el archivo no se sube a ningún servidor.</li>
     </ul>
   </div>
@@ -309,75 +309,77 @@ function buildTitulo(fecha, wh){
   return t;
 }
 
-/* ======================= Construcción de la vista de impresión (HTML, sin librerías) ======================= */
+/* ======================= Construcción de la vista de impresión (HTML, sin librerías) =======================
+   Cada relación (general, almacén Q, almacén A) va SIEMPRE en una sola hoja, sin importar cuántos
+   pedidos traiga el día. Para lograrlo, el alto de fila y el tamaño de letra se calculan según la
+   cantidad de filas que hay que meter en esa hoja: si caben con el tamaño "preferido" (9pt/13.5pt de
+   alto, igual que antes) se usa ese tamaño tal cual; si no caben, se reduce lo necesario para que
+   siempre quepa todo en una sola hoja A4. */
 
-const BLOCK_SIZE = 52;
-const ODV_ROWS = 13;
+const ODV_ROWS = 13; // renglones fijos del apartado ODV (regla de negocio, no de paginación)
 
-function buildGeneralPagesHtml(titulo, valid, odv){
-  const n = valid.length;
-  const nBlocksMin = 3;
-  const nBlocks = Math.max(nBlocksMin, Math.ceil((n + ODV_ROWS + 1) / BLOCK_SIZE));
-  const lastBlockCapacity = BLOCK_SIZE - (ODV_ROWS + 1);
+const PAGE_CONTENT_H_PT = 785.19; // alto útil de una hoja A4 con márgenes 10mm/8mm
+const TITLE_GAP_PT = 6;
+const TITLE_RESERVED_PT = 58; // reserva conservadora (título a 2 líneas, el caso más común)
+const SAFETY_MARGIN_PT = 6; // colchón extra para variaciones de redondeo entre navegador/impresora
+const PREFERRED_ROW_H_PT = 13.5;
+const PREFERRED_CELL_FONT_PT = 9;
+const MIN_CELL_FONT_PT = 4; // piso de legibilidad; si se alcanza, ya no se reduce más
 
-  let html = '';
-  for (let b = 0; b < nBlocks; b++){
-    const isLast = (b === nBlocks - 1);
-    const rowsInBlock = isLast ? lastBlockCapacity : BLOCK_SIZE;
-    let rowsHtml = '';
-    for (let i = 0; i < rowsInBlock; i++){
-      const idx = b * BLOCK_SIZE + i;
-      const num = idx + 1;
-      const pedido = idx < n ? escapeHtml(String(valid[idx].pedido)) : '';
-      const area = idx < n ? escapeHtml(String(valid[idx].fabrica)) : '';
-      rowsHtml += `<tr><td class="num">${num}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
-    }
-    let odvHtml = '';
-    if (isLast){
-      odvHtml += `<tr class="odv-header"><td colspan="3">ODV</td></tr>`;
-      for (let i = 0; i < ODV_ROWS; i++){
-        const pedido = i < odv.length ? escapeHtml(String(odv[i].pedido)) : '';
-        const area = i < odv.length ? escapeHtml(String(odv[i].fabrica)) : '';
-        odvHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
-      }
-    }
-    html += `<section class="print-page">` +
-      `<div class="print-title">${escapeHtml(titulo)}</div>` +
-      `<table class="reloc"><thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
-      `<tbody>${rowsHtml}${odvHtml}</tbody></table>` +
-      `</section>`;
-  }
-  return html;
+function computeRowSizing(totalRows){
+  const budget = PAGE_CONTENT_H_PT - TITLE_RESERVED_PT - TITLE_GAP_PT - SAFETY_MARGIN_PT;
+  const rowH = Math.min(PREFERRED_ROW_H_PT, budget / Math.max(1, totalRows));
+  let cellFont = rowH * (PREFERRED_CELL_FONT_PT / PREFERRED_ROW_H_PT);
+  if (cellFont < MIN_CELL_FONT_PT) cellFont = MIN_CELL_FONT_PT;
+  return { rowH, cellFont };
 }
 
-function buildAlmacenPagesHtml(titulo, wh, valid){
+function buildGeneralPageHtml(titulo, valid, odv){
+  const n = valid.length;
+  const totalRows = 1 /* encabezado */ + n + 1 /* encabezado ODV */ + ODV_ROWS;
+  const { rowH, cellFont } = computeRowSizing(totalRows);
+
+  let rowsHtml = '';
+  for (let i = 0; i < n; i++){
+    rowsHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${escapeHtml(String(valid[i].pedido))}</td><td class="area">${escapeHtml(String(valid[i].fabrica))}</td></tr>`;
+  }
+  let odvHtml = `<tr class="odv-header"><td colspan="3">ODV</td></tr>`;
+  for (let i = 0; i < ODV_ROWS; i++){
+    const pedido = i < odv.length ? escapeHtml(String(odv[i].pedido)) : '';
+    const area = i < odv.length ? escapeHtml(String(odv[i].fabrica)) : '';
+    odvHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
+  }
+  return `<section class="print-page">` +
+    `<div class="print-title">${escapeHtml(titulo)}</div>` +
+    `<table class="reloc" style="--rowH:${rowH.toFixed(2)}pt; --cellFont:${cellFont.toFixed(2)}pt;">` +
+    `<thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
+    `<tbody>${rowsHtml}${odvHtml}</tbody></table>` +
+    `</section>`;
+}
+
+function buildAlmacenPageHtml(titulo, wh, valid){
   const pedidosWh = valid.filter(v => v.fabrica.toUpperCase().includes(wh));
   const n = pedidosWh.length;
-  const nBlocks = Math.max(3, Math.ceil(n / BLOCK_SIZE));
+  const totalRows = 1 + n;
+  const { rowH, cellFont } = computeRowSizing(totalRows);
 
-  let html = '';
-  for (let b = 0; b < nBlocks; b++){
-    let rowsHtml = '';
-    for (let i = 0; i < BLOCK_SIZE; i++){
-      const idx = b * BLOCK_SIZE + i;
-      const num = idx + 1;
-      const pedido = idx < n ? escapeHtml(String(pedidosWh[idx].pedido)) : '';
-      const area = idx < n ? escapeHtml(wh) : '';
-      rowsHtml += `<tr><td class="num">${num}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
-    }
-    html += `<section class="print-page">` +
-      `<div class="print-title">${escapeHtml(titulo)}</div>` +
-      `<table class="reloc"><thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
-      `<tbody>${rowsHtml}</tbody></table>` +
-      `</section>`;
+  let rowsHtml = '';
+  for (let i = 0; i < n; i++){
+    rowsHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${escapeHtml(String(pedidosWh[i].pedido))}</td><td class="area">${escapeHtml(wh)}</td></tr>`;
   }
+  const html = `<section class="print-page">` +
+    `<div class="print-title">${escapeHtml(titulo)}</div>` +
+    `<table class="reloc" style="--rowH:${rowH.toFixed(2)}pt; --cellFont:${cellFont.toFixed(2)}pt;">` +
+    `<thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
+    `<tbody>${rowsHtml}</tbody></table>` +
+    `</section>`;
   return { html, count: n };
 }
 
 function buildPrintDocument(fecha, valid, odv){
-  const generalHtml = buildGeneralPagesHtml(buildTitulo(fecha), valid, odv);
-  const q = buildAlmacenPagesHtml(buildTitulo(fecha, 'Q'), 'Q', valid);
-  const a = buildAlmacenPagesHtml(buildTitulo(fecha, 'A'), 'A', valid);
+  const generalHtml = buildGeneralPageHtml(buildTitulo(fecha), valid, odv);
+  const q = buildAlmacenPageHtml(buildTitulo(fecha, 'Q'), 'Q', valid);
+  const a = buildAlmacenPageHtml(buildTitulo(fecha, 'A'), 'A', valid);
   return { html: generalHtml + q.html + a.html, counts: { q: q.count, a: a.count } };
 }
 
@@ -395,7 +397,6 @@ function buildPdfDoc(fecha, valid, odv){
   const PAGE_W = doc.internal.pageSize.getWidth();
   const CONTENT_W = PAGE_W - 2 * MARGIN_LR;
   const TITLE_FONT = 24, TITLE_MIN_H = 45, TITLE_GAP = 6;
-  const ROW_H = 13.5, CELL_FONT = 9;
   const COL_W = { num: CONTENT_W * 0.22, pedido: CONTENT_W * 0.56, area: CONTENT_W * 0.22 };
   let firstPage = true;
 
@@ -413,86 +414,64 @@ function buildPdfDoc(fecha, valid, odv){
     return barH;
   }
 
-  function drawRow(x0, y, num, pedido, area){
+  function drawRow(x0, y, rowH, cellFont, num, pedido, area){
     doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(CELL_FONT); doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(cellFont); doc.setTextColor(0, 0, 0);
     doc.setFillColor(204, 204, 204);
-    doc.rect(x0, y, COL_W.num, ROW_H, 'FD');
-    doc.text(String(num), x0 + COL_W.num / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0, y, COL_W.num, rowH, 'FD');
+    doc.text(String(num), x0 + COL_W.num / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
     doc.setFillColor(255, 255, 255);
-    doc.rect(x0 + COL_W.num, y, COL_W.pedido, ROW_H, 'S');
-    doc.text(String(pedido || ''), x0 + COL_W.num + COL_W.pedido / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
-    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, ROW_H, 'S');
-    doc.text(String(area || ''), x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + COL_W.num, y, COL_W.pedido, rowH, 'S');
+    doc.text(String(pedido || ''), x0 + COL_W.num + COL_W.pedido / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, rowH, 'S');
+    doc.text(String(area || ''), x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
   }
 
-  function drawHeaderRow(x0, y){
+  function drawHeaderRow(x0, y, rowH, cellFont){
     doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(CELL_FONT); doc.setTextColor(0, 0, 0);
-    doc.rect(x0, y, COL_W.num, ROW_H, 'FD');
-    doc.text('NUM', x0 + COL_W.num / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
-    doc.rect(x0 + COL_W.num, y, COL_W.pedido, ROW_H, 'FD');
-    doc.text('PEDIDO', x0 + COL_W.num + COL_W.pedido / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
-    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, ROW_H, 'FD');
-    doc.text('AREA', x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(cellFont); doc.setTextColor(0, 0, 0);
+    doc.rect(x0, y, COL_W.num, rowH, 'FD');
+    doc.text('NUM', x0 + COL_W.num / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + COL_W.num, y, COL_W.pedido, rowH, 'FD');
+    doc.text('PEDIDO', x0 + COL_W.num + COL_W.pedido / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, rowH, 'FD');
+    doc.text('AREA', x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
   }
 
-  function drawOdvHeaderRow(x0, y){
+  function drawOdvHeaderRow(x0, y, rowH, cellFont){
     doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
-    doc.rect(x0, y, CONTENT_W, ROW_H, 'FD');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(CELL_FONT); doc.setTextColor(0, 0, 0);
-    doc.text('ODV', x0 + CONTENT_W / 2, y + ROW_H / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0, y, CONTENT_W, rowH, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(cellFont); doc.setTextColor(0, 0, 0);
+    doc.text('ODV', x0 + CONTENT_W / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
   }
 
-  function drawPage(titulo, rows, odvRows){
+  // Dibuja UNA relación completa (general, Q o A) en una sola página, con el alto de fila y la
+  // letra ajustados para que quepan todos sus renglones (regla de negocio: 1 relación = 1 hoja).
+  function drawDocument(titulo, rows, odvRows){
     if (!firstPage) doc.addPage(); else firstPage = false;
+    const totalRows = 1 + rows.length + (odvRows ? 1 + odvRows.length : 0);
+    const { rowH, cellFont } = computeRowSizing(totalRows);
     const x0 = MARGIN_LR, y0 = MARGIN_TB;
     const barH = drawTitleBar(x0, y0, titulo);
     let y = y0 + barH + TITLE_GAP;
-    drawHeaderRow(x0, y); y += ROW_H;
-    rows.forEach(r => { drawRow(x0, y, r.num, r.pedido, r.area); y += ROW_H; });
+    drawHeaderRow(x0, y, rowH, cellFont); y += rowH;
+    rows.forEach(r => { drawRow(x0, y, rowH, cellFont, r.num, r.pedido, r.area); y += rowH; });
     if (odvRows){
-      drawOdvHeaderRow(x0, y); y += ROW_H;
-      odvRows.forEach(r => { drawRow(x0, y, r.num, r.pedido, r.area); y += ROW_H; });
+      drawOdvHeaderRow(x0, y, rowH, cellFont); y += rowH;
+      odvRows.forEach(r => { drawRow(x0, y, rowH, cellFont, r.num, r.pedido, r.area); y += rowH; });
     }
   }
 
   const n = valid.length;
-  const nBlocksMin = 3;
-  const nBlocks = Math.max(nBlocksMin, Math.ceil((n + ODV_ROWS + 1) / BLOCK_SIZE));
-  const lastBlockCapacity = BLOCK_SIZE - (ODV_ROWS + 1);
-  const tituloGeneral = buildTitulo(fecha);
-  for (let b = 0; b < nBlocks; b++){
-    const isLast = (b === nBlocks - 1);
-    const rowsInBlock = isLast ? lastBlockCapacity : BLOCK_SIZE;
-    const rows = [];
-    for (let i = 0; i < rowsInBlock; i++){
-      const idx = b * BLOCK_SIZE + i;
-      rows.push({ num: idx + 1, pedido: idx < n ? valid[idx].pedido : '', area: idx < n ? valid[idx].fabrica : '' });
-    }
-    let odvRows = null;
-    if (isLast){
-      odvRows = [];
-      for (let i = 0; i < ODV_ROWS; i++){
-        odvRows.push({ num: i + 1, pedido: i < odv.length ? odv[i].pedido : '', area: i < odv.length ? odv[i].fabrica : '' });
-      }
-    }
-    drawPage(tituloGeneral, rows, odvRows);
-  }
+  const rowsGeneral = valid.map((v, i) => ({ num: i + 1, pedido: v.pedido, area: v.fabrica }));
+  const odvRows = odv.slice(0, ODV_ROWS).map((o, i) => ({ num: i + 1, pedido: o.pedido, area: o.fabrica }));
+  while (odvRows.length < ODV_ROWS) odvRows.push({ num: odvRows.length + 1, pedido: '', area: '' });
+  drawDocument(buildTitulo(fecha), rowsGeneral, odvRows);
 
   ['Q', 'A'].forEach(wh => {
     const pedidosWh = valid.filter(v => v.fabrica.toUpperCase().includes(wh));
-    const nn = pedidosWh.length;
-    const nb = Math.max(3, Math.ceil(nn / BLOCK_SIZE));
-    const titulo = buildTitulo(fecha, wh);
-    for (let b = 0; b < nb; b++){
-      const rows = [];
-      for (let i = 0; i < BLOCK_SIZE; i++){
-        const idx = b * BLOCK_SIZE + i;
-        rows.push({ num: idx + 1, pedido: idx < nn ? pedidosWh[idx].pedido : '', area: idx < nn ? wh : '' });
-      }
-      drawPage(titulo, rows, null);
-    }
+    const rows = pedidosWh.map((v, i) => ({ num: i + 1, pedido: v.pedido, area: wh }));
+    drawDocument(buildTitulo(fecha, wh), rows, null);
   });
 
   return doc;
