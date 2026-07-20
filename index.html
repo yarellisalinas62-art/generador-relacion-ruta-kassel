@@ -37,25 +37,36 @@
   .badge{display:inline-block; background:var(--green-light); color:var(--navy); font-size:11px; font-weight:bold; padding:2px 8px; border-radius:10px; margin-left:6px;}
   footer{text-align:center; font-size:12px; color:#888; padding:20px;}
 
-  /* ---------- Vista de impresión (oculta en pantalla, visible solo al imprimir/exportar PDF) ---------- */
+  /* ---------- Vista de impresión (oculta en pantalla, visible solo al imprimir/exportar PDF) ----------
+     Diseño calcado del Excel de referencia de Yarelli: letra fija Arial 23pt (título) / 18pt (tabla),
+     3 bloques de NUM/PEDIDO/AREA lado a lado por hoja (proporción de columnas 19.35% / 61.30% / 19.35%,
+     igual que el ancho de columnas de su Excel), y una sola "escala de página" (como el ajustar-a-una-
+     página de Excel) que achica TODO el bloque (letra + filas + columnas juntas) lo mínimo necesario
+     para que cada relación quepa siempre en una sola hoja A4. Ver funciones JS más abajo. */
   #printArea{ display:none; }
-  .print-page{ page-break-after:always; }
+  .print-page{ page-break-after:always; position:relative; }
   .print-page:last-child{ page-break-after:auto; }
-  .print-title{
-    font:bold 24pt Arial, sans-serif; text-align:center; background:#cccccc; color:#000;
-    border:1px solid #000; min-height:45pt; display:flex; align-items:center; justify-content:center;
-    margin-bottom:6pt;
+
+  .scale-outer{ position:relative; overflow:hidden; }
+  .scale-inner{ position:absolute; top:0; left:0; transform-origin:top left; }
+
+  .title-bar{
+    font:bold 23pt Arial, sans-serif; text-align:center; background:#DAE4E7; color:#000;
+    border:1px solid #000; box-sizing:border-box; display:flex; align-items:center; justify-content:center;
+    line-height:1.15; padding:0 8pt;
   }
-  table.reloc{ width:100%; border-collapse:collapse; table-layout:fixed; }
-  table.reloc th, table.reloc td{
-    border:1px solid #000; font-family:Arial, sans-serif; font-weight:bold; text-align:center; vertical-align:middle;
-    height:var(--rowH, 13.5pt); font-size:var(--cellFont, 9pt); padding:0 4pt; overflow:hidden;
+
+  .reloc-grid{ display:grid; box-sizing:border-box; }
+  .reloc-grid .cell{
+    border:1px solid #000; font-family:Arial, sans-serif; font-weight:bold; font-size:18pt; color:#000;
+    text-align:center; display:flex; align-items:center; justify-content:center; box-sizing:border-box;
+    overflow:hidden; white-space:nowrap; background:#fff; padding:0 3pt;
   }
-  table.reloc th{ background:#cccccc; }
-  table.reloc td.num{ background:#cccccc; width:22%; }
-  table.reloc td.pedido{ width:56%; }
-  table.reloc td.area{ width:22%; }
-  table.reloc tr.odv-header td{ background:#cccccc; }
+  .reloc-grid .cell.num, .reloc-grid .cell.header{ background:#DAE4E7; }
+  .reloc-grid .cell.header{ overflow:visible; white-space:nowrap; }
+  .reloc-grid .cell.blank{ border:none; background:transparent; }
+  .reloc-grid .gap{ border:none; background:transparent; }
+  .reloc-grid .odv-label{ font-size:18pt; }
 
   @media print{
     body > *:not(#printArea){ display:none !important; }
@@ -103,7 +114,7 @@
       <li>Genera 3 documentos: <strong>RELACION GENERAL</strong> (todos los pedidos válidos + apartado ODV), <strong>ALMACEN Q</strong> y <strong>ALMACEN A</strong>. Almacén K ya no recibe hoja propia.</li>
       <li>El apartado <strong>ODV</strong> (solo en la relación general) incluye los pedidos de la tabla derecha cuyo motivo sea <strong>Pendiente, SM o SD</strong>. Cancelado y Stand By se descartan por completo.</li>
       <li>En las hojas de Almacén Q/A, la columna AREA muestra solo la letra de ese almacén; en la relación general muestra el valor de Fábrica tal cual viene en el Excel.</li>
-      <li>Cada relación (general, almacén Q, almacén A) sale siempre en una sola hoja: el tamaño de letra de la tabla se ajusta automáticamente según cuántos pedidos traiga el día. "Imprimir relación" abre el diálogo de impresión del navegador (desde ahí también puedes elegir "Guardar como PDF"); "Descargar PDF" genera directamente el archivo (3 páginas: general, almacén Q y almacén A).</li>
+      <li>El diseño de cada hoja calca el formato del Excel de Yarelli: letra Arial fija (23pt título, 18pt tabla) y 3 bloques de NUM/PEDIDO/AREA lado a lado con numeración continua. Cada relación (general, almacén Q, almacén A) sale siempre en una sola hoja: si un día trae muchos pedidos, toda la hoja (letra + filas + columnas juntas) se reduce de escala automáticamente, igual que el "ajustar a una página" de Excel. "Imprimir relación" abre el diálogo de impresión del navegador (desde ahí también puedes elegir "Guardar como PDF"); "Descargar PDF" genera directamente el archivo (3 páginas: general, almacén Q y almacén A).</li>
       <li>Todo el procesamiento ocurre en tu propio navegador: el archivo no se sube a ningún servidor.</li>
     </ul>
   </div>
@@ -310,70 +321,150 @@ function buildTitulo(fecha, wh){
 }
 
 /* ======================= Construcción de la vista de impresión (HTML, sin librerías) =======================
-   Cada relación (general, almacén Q, almacén A) va SIEMPRE en una sola hoja, sin importar cuántos
-   pedidos traiga el día. Para lograrlo, el alto de fila y el tamaño de letra se calculan según la
-   cantidad de filas que hay que meter en esa hoja: si caben con el tamaño "preferido" (9pt/13.5pt de
-   alto, igual que antes) se usa ese tamaño tal cual; si no caben, se reduce lo necesario para que
-   siempre quepa todo en una sola hoja A4. */
+   Diseño calcado del Excel de referencia: letra FIJA (23pt título, 18pt tabla, igual que el Excel) y
+   3 bloques de NUM/PEDIDO/AREA lado a lado por hoja (numeración continua entre bloques), con las mismas
+   proporciones de columna que el Excel (8.43 : 26.71 : 8.43, o sea ~19.35% / 61.30% / 19.35%). Cada
+   relación (general, almacén Q, almacén A) sigue saliendo SIEMPRE en una sola hoja: en vez de ir
+   reduciendo la letra fila por fila (diseño anterior), ahora se calcula una sola "escala de página"
+   -igual que el "ajustar a una hoja" de Excel- que achica TODO el bloque (letra + filas + columnas
+   juntas, como una fotografía) lo mínimo necesario para que quepa completo en una hoja A4. Si ya cabe
+   al tamaño natural, la escala es 1 (no se toca nada).
+
+   El apartado ODV (13 filas fijas, regla de negocio) se agrega después de los 3 bloques, a todo el
+   ancho de la hoja, solo en la relación general. */
 
 const ODV_ROWS = 13; // renglones fijos del apartado ODV (regla de negocio, no de paginación)
 
 const PAGE_CONTENT_H_PT = 785.19; // alto útil de una hoja A4 con márgenes 10mm/8mm
-const TITLE_GAP_PT = 6;
-const TITLE_RESERVED_PT = 58; // reserva conservadora (título a 2 líneas, el caso más común)
-const SAFETY_MARGIN_PT = 6; // colchón extra para variaciones de redondeo entre navegador/impresora
-const PREFERRED_ROW_H_PT = 13.5;
-const PREFERRED_CELL_FONT_PT = 9;
-const MIN_CELL_FONT_PT = 4; // piso de legibilidad; si se alcanza, ya no se reduce más
+const PAGE_CONTENT_W_PT = 549.92; // ancho útil de una hoja A4 con márgenes 10mm/8mm
 
-function computeRowSizing(totalRows){
-  const budget = PAGE_CONTENT_H_PT - TITLE_RESERVED_PT - TITLE_GAP_PT - SAFETY_MARGIN_PT;
-  const rowH = Math.min(PREFERRED_ROW_H_PT, budget / Math.max(1, totalRows));
-  let cellFont = rowH * (PREFERRED_CELL_FONT_PT / PREFERRED_ROW_H_PT);
-  if (cellFont < MIN_CELL_FONT_PT) cellFont = MIN_CELL_FONT_PT;
-  return { rowH, cellFont };
+const TITLE_FONT_PT = 23;     // Arial 23pt, igual que el título en el Excel de referencia
+const DATA_FONT_PT = 18;      // Arial 18pt, igual que encabezados/datos en el Excel de referencia
+const ROW_H_PT = 24;          // alto de fila, igual que el Excel de referencia
+const TITLE_BAR_H_1LINE_PT = 32;
+const TITLE_BAR_H_2LINE_PT = 58;
+const GAP_AFTER_TITLE_PT = 8;
+const GAP_BEFORE_ODV_PT = 10;
+
+// Unidades de ancho de columna tomadas directamente del Excel (ws.column_dimensions): NUM/AREA/hueco
+// = 8.43, PEDIDO = 26.71. Un "bloque" es NUM+PEDIDO+AREA; entre bloques hay una columna hueca del
+// mismo ancho que NUM/AREA. Estos valores se usan tal cual como fracciones (fr) en CSS Grid, así que
+// solo importan las proporciones entre ellos, no su valor absoluto.
+const COL_UNITS = { num: 8.43, pedido: 26.71, area: 8.43, gap: 8.43 };
+const BLOCK_UNITS = COL_UNITS.num + COL_UNITS.pedido + COL_UNITS.area; // 43.57
+const TOTAL_UNITS = 3 * BLOCK_UNITS + 2 * COL_UNITS.gap; // 147.57 (3 bloques + 2 huecos)
+const GRID_TEMPLATE_COLUMNS =
+  `${COL_UNITS.num}fr ${COL_UNITS.pedido}fr ${COL_UNITS.area}fr ${COL_UNITS.gap}fr ` +
+  `${COL_UNITS.num}fr ${COL_UNITS.pedido}fr ${COL_UNITS.area}fr ${COL_UNITS.gap}fr ` +
+  `${COL_UNITS.num}fr ${COL_UNITS.pedido}fr ${COL_UNITS.area}fr`;
+const ODV_GRID_TEMPLATE_COLUMNS = `${COL_UNITS.num}fr ${COL_UNITS.pedido}fr ${COL_UNITS.area}fr`;
+
+// Reparte "total" filas entre los 3 bloques lo más parejo posible, llenando primero los de la
+// izquierda (igual que el Excel: bloque 1 lleno, luego bloque 2, luego bloque 3).
+function blockRowCounts(total){
+  const base = Math.floor(total / 3), extra = total % 3;
+  return [base + (extra > 0 ? 1 : 0), base + (extra > 1 ? 1 : 0), base];
+}
+function splitIntoBlocks(rows, rowCounts){
+  const out = [[], [], []];
+  let idx = 0;
+  for (let b = 0; b < 3; b++){
+    for (let i = 0; i < rowCounts[b]; i++){ out[b].push(rows[idx]); idx++; }
+  }
+  return out;
+}
+
+// Mide (con canvas, aproximado) si el título cabe en una sola línea a 23pt Arial bold dentro del
+// ancho útil de la hoja; si no, se reserva una barra de título más alta (2 líneas).
+function measureTitleLines(titulo){
+  if (!measureTitleLines._ctx){
+    measureTitleLines._ctx = document.createElement('canvas').getContext('2d');
+  }
+  const ctx = measureTitleLines._ctx;
+  ctx.font = `bold ${TITLE_FONT_PT}pt Arial`;
+  const maxWidth = PAGE_CONTENT_W_PT - 16;
+  return ctx.measureText(titulo).width <= maxWidth ? 1 : 2;
+}
+
+function cellDivHtml(cls, text){
+  return `<div class="cell ${cls}">${escapeHtml(text)}</div>`;
+}
+function gapDivHtml(){
+  return `<div class="gap"></div>`;
+}
+function headerRowHtml(){
+  const block = cellDivHtml('header num', 'NUM') + cellDivHtml('header pedido', 'PEDIDO') + cellDivHtml('header area', 'AREA');
+  return block + gapDivHtml() + block + gapDivHtml() + block;
+}
+function dataRowHtml(r, blockData, rowCounts, startNums){
+  let out = '';
+  for (let b = 0; b < 3; b++){
+    if (r < rowCounts[b]){
+      const item = blockData[b][r];
+      out += cellDivHtml('num', String(startNums[b] + r)) +
+             cellDivHtml('pedido', String(item.pedido)) +
+             cellDivHtml('area', String(item.fabrica));
+    } else {
+      out += cellDivHtml('blank', '') + cellDivHtml('blank', '') + cellDivHtml('blank', '');
+    }
+    if (b < 2) out += gapDivHtml();
+  }
+  return out;
+}
+
+// Construye UNA relación completa (general, Q o A) en una sola hoja: título + 3 bloques lado a lado
+// (+ ODV si aplica), con la escala de página ya calculada y aplicada.
+function buildPageHtml(titulo, rows, isGeneral, odvRows){
+  const total = rows.length;
+  const rowCounts = blockRowCounts(total);
+  const maxRows = Math.max(rowCounts[0], rowCounts[1], rowCounts[2]);
+  const startNums = [1, rowCounts[0] + 1, rowCounts[0] + rowCounts[1] + 1];
+  const blockData = splitIntoBlocks(rows, rowCounts);
+
+  let mainGridHtml = headerRowHtml();
+  for (let r = 0; r < maxRows; r++) mainGridHtml += dataRowHtml(r, blockData, rowCounts, startNums);
+
+  const titleLines = measureTitleLines(titulo);
+  const titleBarH = titleLines <= 1 ? TITLE_BAR_H_1LINE_PT : TITLE_BAR_H_2LINE_PT;
+
+  let odvHtml = '', odvExtraH = 0;
+  if (isGeneral){
+    let odvRowsHtml = '';
+    for (let i = 0; i < ODV_ROWS; i++){
+      const item = odvRows[i];
+      odvRowsHtml += cellDivHtml('num', String(i + 1)) +
+        cellDivHtml('pedido', item ? String(item.pedido) : '') +
+        cellDivHtml('area', item ? String(item.fabrica) : '');
+    }
+    odvHtml = `<div style="height:${GAP_BEFORE_ODV_PT}pt;"></div>` +
+      `<div class="reloc-grid" style="grid-template-columns:${ODV_GRID_TEMPLATE_COLUMNS}; grid-auto-rows:${ROW_H_PT}pt;">` +
+      `<div class="cell header odv-label" style="grid-column:1 / -1;">ODV</div>${odvRowsHtml}</div>`;
+    odvExtraH = GAP_BEFORE_ODV_PT + ROW_H_PT + ODV_ROWS * ROW_H_PT;
+  }
+
+  const naturalH = titleBarH + GAP_AFTER_TITLE_PT + ROW_H_PT + maxRows * ROW_H_PT + odvExtraH;
+  const scale = Math.min(1, PAGE_CONTENT_H_PT / naturalH);
+  const scaledH = naturalH * scale;
+
+  return `<section class="print-page"><div class="scale-outer" style="height:${scaledH.toFixed(2)}pt;">` +
+    `<div class="scale-inner" style="width:${PAGE_CONTENT_W_PT}pt; transform:scale(${scale.toFixed(4)});">` +
+    `<div class="title-bar" style="height:${titleBarH}pt;">${escapeHtml(titulo)}</div>` +
+    `<div style="height:${GAP_AFTER_TITLE_PT}pt;"></div>` +
+    `<div class="reloc-grid" style="grid-template-columns:${GRID_TEMPLATE_COLUMNS}; grid-auto-rows:${ROW_H_PT}pt;">${mainGridHtml}</div>` +
+    odvHtml +
+    `</div></div></section>`;
 }
 
 function buildGeneralPageHtml(titulo, valid, odv){
-  const n = valid.length;
-  const totalRows = 1 /* encabezado */ + n + 1 /* encabezado ODV */ + ODV_ROWS;
-  const { rowH, cellFont } = computeRowSizing(totalRows);
-
-  let rowsHtml = '';
-  for (let i = 0; i < n; i++){
-    rowsHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${escapeHtml(String(valid[i].pedido))}</td><td class="area">${escapeHtml(String(valid[i].fabrica))}</td></tr>`;
-  }
-  let odvHtml = `<tr class="odv-header"><td colspan="3">ODV</td></tr>`;
-  for (let i = 0; i < ODV_ROWS; i++){
-    const pedido = i < odv.length ? escapeHtml(String(odv[i].pedido)) : '';
-    const area = i < odv.length ? escapeHtml(String(odv[i].fabrica)) : '';
-    odvHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${pedido}</td><td class="area">${area}</td></tr>`;
-  }
-  return `<section class="print-page">` +
-    `<div class="print-title">${escapeHtml(titulo)}</div>` +
-    `<table class="reloc" style="--rowH:${rowH.toFixed(2)}pt; --cellFont:${cellFont.toFixed(2)}pt;">` +
-    `<thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
-    `<tbody>${rowsHtml}${odvHtml}</tbody></table>` +
-    `</section>`;
+  const rows = valid.map(v => ({ pedido: v.pedido, fabrica: v.fabrica }));
+  return buildPageHtml(titulo, rows, true, odv.slice(0, ODV_ROWS));
 }
 
 function buildAlmacenPageHtml(titulo, wh, valid){
   const pedidosWh = valid.filter(v => v.fabrica.toUpperCase().includes(wh));
-  const n = pedidosWh.length;
-  const totalRows = 1 + n;
-  const { rowH, cellFont } = computeRowSizing(totalRows);
-
-  let rowsHtml = '';
-  for (let i = 0; i < n; i++){
-    rowsHtml += `<tr><td class="num">${i + 1}</td><td class="pedido">${escapeHtml(String(pedidosWh[i].pedido))}</td><td class="area">${escapeHtml(wh)}</td></tr>`;
-  }
-  const html = `<section class="print-page">` +
-    `<div class="print-title">${escapeHtml(titulo)}</div>` +
-    `<table class="reloc" style="--rowH:${rowH.toFixed(2)}pt; --cellFont:${cellFont.toFixed(2)}pt;">` +
-    `<thead><tr><th>NUM</th><th>PEDIDO</th><th>AREA</th></tr></thead>` +
-    `<tbody>${rowsHtml}</tbody></table>` +
-    `</section>`;
-  return { html, count: n };
+  const rows = pedidosWh.map(v => ({ pedido: v.pedido, fabrica: wh }));
+  const html = buildPageHtml(titulo, rows, false, null);
+  return { html, count: rows.length };
 }
 
 function buildPrintDocument(fecha, valid, odv){
@@ -386,91 +477,123 @@ function buildPrintDocument(fecha, valid, odv){
 /* ======================= Construcción del PDF (jsPDF vectorial, sin html2canvas) =======================
    Dibuja directamente con jsPDF (texto + rectángulos) en vez de "fotografiar" el HTML con html2canvas:
    el resultado es un PDF nítido (texto real, no una imagen) y evita los problemas de captura de
-   elementos ocultos/fuera de pantalla que tiene html2canvas. La geometría reproduce exactamente el
-   diseño de impresión (misma hoja A4, márgenes 10mm/8mm, título 24pt, celdas 9pt/13.5pt de alto). */
+   elementos ocultos/fuera de pantalla que tiene html2canvas. Reproduce exactamente el mismo diseño que
+   la vista de impresión (3 bloques lado a lado, letra fija 23pt/18pt, escala de página única) — ver
+   buildPageHtml más arriba para la explicación completa del mecanismo. */
+
+const HEADER_FILL = [0xDA, 0xE4, 0xE7]; // #DAE4E7 (theme=8/accent5 + tint ~0.8 del Excel de referencia)
 
 function buildPdfDoc(fecha, valid, odv){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
 
-  const MARGIN_TB = 28.35, MARGIN_LR = 22.68; // 10mm / 8mm en puntos
-  const PAGE_W = doc.internal.pageSize.getWidth();
-  const CONTENT_W = PAGE_W - 2 * MARGIN_LR;
-  const TITLE_FONT = 24, TITLE_MIN_H = 45, TITLE_GAP = 6;
-  const COL_W = { num: CONTENT_W * 0.22, pedido: CONTENT_W * 0.56, area: CONTENT_W * 0.22 };
+  const MARGIN_TB = 28.35, MARGIN_LR = 22.68; // 10mm / 8mm en puntos (igual que la vista de impresión)
+  const CONTENT_W = PAGE_CONTENT_W_PT;
+  const unitPt = CONTENT_W / TOTAL_UNITS;
+  const odvUnitPt = CONTENT_W / BLOCK_UNITS; // el bloque ODV ocupa el ancho completo de la hoja
   let firstPage = true;
 
-  function drawTitleBar(x0, y0, titulo){
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(TITLE_FONT);
-    const maxWidth = CONTENT_W - 16;
-    const lines = doc.splitTextToSize(titulo, maxWidth);
-    const barH = lines.length <= 1 ? TITLE_MIN_H : 58;
-    doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
-    doc.rect(x0, y0, CONTENT_W, barH, 'FD');
+  function drawTitleBar(x0, y0, titulo, barH, scale){
+    const font = TITLE_FONT_PT * scale;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(font);
+    doc.setFillColor(...HEADER_FILL); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
+    const w = CONTENT_W * scale;
+    doc.rect(x0, y0, w, barH, 'FD');
     doc.setTextColor(0, 0, 0);
-    const lineH = TITLE_FONT * 1.15;
+    const maxWidth = w - 16 * scale;
+    const lines = doc.splitTextToSize(titulo, maxWidth);
+    const lineH = font * 1.15;
     const startY = y0 + (barH - lines.length * lineH) / 2 + lineH / 2;
-    lines.forEach((ln, i) => doc.text(ln, x0 + CONTENT_W / 2, startY + i * lineH, { align: 'center', baseline: 'middle' }));
-    return barH;
+    lines.forEach((ln, i) => doc.text(ln, x0 + w / 2, startY + i * lineH, { align: 'center', baseline: 'middle' }));
   }
 
-  function drawRow(x0, y, rowH, cellFont, num, pedido, area){
+  // Dibuja una fila de 3 celdas (NUM/PEDIDO/AREA) empezando en x0, con los anchos dados.
+  function drawCells(x0, y, rowH, font, colW, num, pedido, area){
     doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(cellFont); doc.setTextColor(0, 0, 0);
-    doc.setFillColor(204, 204, 204);
-    doc.rect(x0, y, COL_W.num, rowH, 'FD');
-    doc.text(String(num), x0 + COL_W.num / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(font); doc.setTextColor(0, 0, 0);
+    doc.setFillColor(...HEADER_FILL);
+    doc.rect(x0, y, colW.num, rowH, 'FD');
+    doc.text(String(num), x0 + colW.num / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
     doc.setFillColor(255, 255, 255);
-    doc.rect(x0 + COL_W.num, y, COL_W.pedido, rowH, 'S');
-    doc.text(String(pedido || ''), x0 + COL_W.num + COL_W.pedido / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
-    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, rowH, 'S');
-    doc.text(String(area || ''), x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + colW.num, y, colW.pedido, rowH, 'FD');
+    doc.text(String(pedido), x0 + colW.num + colW.pedido / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + colW.num + colW.pedido, y, colW.area, rowH, 'FD');
+    doc.text(String(area), x0 + colW.num + colW.pedido + colW.area / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
   }
 
-  function drawHeaderRow(x0, y, rowH, cellFont){
-    doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(cellFont); doc.setTextColor(0, 0, 0);
-    doc.rect(x0, y, COL_W.num, rowH, 'FD');
-    doc.text('NUM', x0 + COL_W.num / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
-    doc.rect(x0 + COL_W.num, y, COL_W.pedido, rowH, 'FD');
-    doc.text('PEDIDO', x0 + COL_W.num + COL_W.pedido / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
-    doc.rect(x0 + COL_W.num + COL_W.pedido, y, COL_W.area, rowH, 'FD');
-    doc.text('AREA', x0 + COL_W.num + COL_W.pedido + COL_W.area / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+  function drawHeaderCells(x0, y, rowH, font, colW){
+    doc.setDrawColor(0, 0, 0); doc.setLineWidth(1); doc.setFillColor(...HEADER_FILL);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(font); doc.setTextColor(0, 0, 0);
+    doc.rect(x0, y, colW.num, rowH, 'FD');
+    doc.text('NUM', x0 + colW.num / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + colW.num, y, colW.pedido, rowH, 'FD');
+    doc.text('PEDIDO', x0 + colW.num + colW.pedido / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+    doc.rect(x0 + colW.num + colW.pedido, y, colW.area, rowH, 'FD');
+    doc.text('AREA', x0 + colW.num + colW.pedido + colW.area / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
   }
 
-  function drawOdvHeaderRow(x0, y, rowH, cellFont){
-    doc.setFillColor(204, 204, 204); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
-    doc.rect(x0, y, CONTENT_W, rowH, 'FD');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(cellFont); doc.setTextColor(0, 0, 0);
-    doc.text('ODV', x0 + CONTENT_W / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
-  }
-
-  // Dibuja UNA relación completa (general, Q o A) en una sola página, con el alto de fila y la
-  // letra ajustados para que quepan todos sus renglones (regla de negocio: 1 relación = 1 hoja).
+  // Dibuja UNA relación completa (general, Q o A) en una sola página: 3 bloques de NUM/PEDIDO/AREA
+  // lado a lado (+ ODV a todo lo ancho, solo en la general), escalados como una sola unidad para que
+  // siempre quepan en una hoja A4 (mismo mecanismo que buildPageHtml, aplicado manualmente porque
+  // jsPDF no tiene "transform:scale").
   function drawDocument(titulo, rows, odvRows){
     if (!firstPage) doc.addPage(); else firstPage = false;
-    const totalRows = 1 + rows.length + (odvRows ? 1 + odvRows.length : 0);
-    const { rowH, cellFont } = computeRowSizing(totalRows);
+    const total = rows.length;
+    const rowCounts = blockRowCounts(total);
+    const maxRows = Math.max(rowCounts[0], rowCounts[1], rowCounts[2]);
+    const startNums = [1, rowCounts[0] + 1, rowCounts[0] + rowCounts[1] + 1];
+    const blockData = splitIntoBlocks(rows, rowCounts);
+
+    const titleLines = measureTitleLines(titulo);
+    const titleBarHNatural = titleLines <= 1 ? TITLE_BAR_H_1LINE_PT : TITLE_BAR_H_2LINE_PT;
+    const odvExtraH = odvRows ? GAP_BEFORE_ODV_PT + ROW_H_PT + ODV_ROWS * ROW_H_PT : 0;
+    const naturalH = titleBarHNatural + GAP_AFTER_TITLE_PT + ROW_H_PT + maxRows * ROW_H_PT + odvExtraH;
+    const scale = Math.min(1, PAGE_CONTENT_H_PT / naturalH);
+
+    const rowH = ROW_H_PT * scale, font = DATA_FONT_PT * scale, titleBarH = titleBarHNatural * scale;
+    const gapAfterTitle = GAP_AFTER_TITLE_PT * scale, gapBeforeOdv = GAP_BEFORE_ODV_PT * scale;
+    const colW = { num: COL_UNITS.num * unitPt * scale, pedido: COL_UNITS.pedido * unitPt * scale, area: COL_UNITS.area * unitPt * scale };
+    const gapW = COL_UNITS.gap * unitPt * scale;
+    const blockStep = colW.num + colW.pedido + colW.area + gapW;
+    const odvColW = { num: COL_UNITS.num * odvUnitPt * scale, pedido: COL_UNITS.pedido * odvUnitPt * scale, area: COL_UNITS.area * odvUnitPt * scale };
+
     const x0 = MARGIN_LR, y0 = MARGIN_TB;
-    const barH = drawTitleBar(x0, y0, titulo);
-    let y = y0 + barH + TITLE_GAP;
-    drawHeaderRow(x0, y, rowH, cellFont); y += rowH;
-    rows.forEach(r => { drawRow(x0, y, rowH, cellFont, r.num, r.pedido, r.area); y += rowH; });
+    drawTitleBar(x0, y0, titulo, titleBarH, scale);
+    let y = y0 + titleBarH + gapAfterTitle;
+
+    for (let b = 0; b < 3; b++) drawHeaderCells(x0 + b * blockStep, y, rowH, font, colW);
+    y += rowH;
+    for (let r = 0; r < maxRows; r++){
+      for (let b = 0; b < 3; b++){
+        if (r < rowCounts[b]){
+          const item = blockData[b][r];
+          drawCells(x0 + b * blockStep, y, rowH, font, colW, startNums[b] + r, item.pedido, item.fabrica);
+        }
+      }
+      y += rowH;
+    }
+
     if (odvRows){
-      drawOdvHeaderRow(x0, y, rowH, cellFont); y += rowH;
-      odvRows.forEach(r => { drawRow(x0, y, rowH, cellFont, r.num, r.pedido, r.area); y += rowH; });
+      y += gapBeforeOdv;
+      doc.setFillColor(...HEADER_FILL); doc.setDrawColor(0, 0, 0); doc.setLineWidth(1);
+      doc.rect(x0, y, CONTENT_W * scale, rowH, 'FD');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(font); doc.setTextColor(0, 0, 0);
+      doc.text('ODV', x0 + (CONTENT_W * scale) / 2, y + rowH / 2, { align: 'center', baseline: 'middle' });
+      y += rowH;
+      for (let i = 0; i < ODV_ROWS; i++){
+        const item = odvRows[i];
+        drawCells(x0, y, rowH, font, odvColW, i + 1, item ? item.pedido : '', item ? item.fabrica : '');
+        y += rowH;
+      }
     }
   }
 
-  const n = valid.length;
-  const rowsGeneral = valid.map((v, i) => ({ num: i + 1, pedido: v.pedido, area: v.fabrica }));
-  const odvRows = odv.slice(0, ODV_ROWS).map((o, i) => ({ num: i + 1, pedido: o.pedido, area: o.fabrica }));
-  while (odvRows.length < ODV_ROWS) odvRows.push({ num: odvRows.length + 1, pedido: '', area: '' });
-  drawDocument(buildTitulo(fecha), rowsGeneral, odvRows);
+  const rowsGeneral = valid.map(v => ({ pedido: v.pedido, fabrica: v.fabrica }));
+  drawDocument(buildTitulo(fecha), rowsGeneral, odv.slice(0, ODV_ROWS));
 
   ['Q', 'A'].forEach(wh => {
     const pedidosWh = valid.filter(v => v.fabrica.toUpperCase().includes(wh));
-    const rows = pedidosWh.map((v, i) => ({ num: i + 1, pedido: v.pedido, area: wh }));
+    const rows = pedidosWh.map(v => ({ pedido: v.pedido, fabrica: wh }));
     drawDocument(buildTitulo(fecha, wh), rows, null);
   });
 
